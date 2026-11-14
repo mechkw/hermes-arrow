@@ -170,7 +170,7 @@ try {
   await page.waitForTimeout(1100);
   assert.equal((await played(page)).at(-1), 'streak', 'a third win in a row adds the streak cue');
   await shot(page, '05-cleared-free');
-  await page.click('[aria-label="Harder"]');
+  await page.locator('[aria-label="Higher level"]').first().click();
   s = await snap(page);
   assert.deepEqual([s.level, s.maxLives], [4, 3], 'the level picker deals a harder board');
   for (const [lvl, lives] of [[1, 2], [5, 4], [7, 5]]) { await page.evaluate(n => window.arrow.deal(n), lvl); assert.equal((await snap(page)).maxLives, lives, `level ${lvl} has ${lives} lives`); }
@@ -332,6 +332,7 @@ try {
   await page.fill('[aria-label="Transparency"]', '60');
   assert.match(await bg(), /40%/, 'transparency thins the modal background');
   assert.equal(await page.locator('[aria-label="Volume"]').count(), 1, 'volume is in the same menu');
+  assert.match(await page.evaluate(() => document.querySelector('[data-bar]').style.background), /50%/, 'the top bar is a half-opaque layer over the board: midway between the board and solid');
   assert.equal(await page.locator('[aria-label="Mute sound"]').count(), 1, 'mute stays in the header');
   await page.waitForTimeout(200);
   await shot(page, '16-modal-settings-see-through');
@@ -376,6 +377,43 @@ try {
   await page.waitForTimeout(200);
   assert.ok(errors.some(e => e.includes('[hermes-arrow]')), 'the failure is logged');
   errors.length = 0;
+  await page.close();
+
+  // --- Level override during a task, and the difficulty handicap ---------------------------------
+  page = await open({ width: 1180, height: 760 });
+  await page.evaluate(() => window.agent.send('thanks'));
+  await page.click('[data-pill]');
+  await page.waitForFunction(() => window.arrow.game.status === 'play' && window.arrow.game.meta.mode === 'task');
+  assert.equal((await snap(page)).level, 1, 'a throwaway prompt deals level 1');
+  await page.click('[aria-label="Higher level"]'); await page.click('[aria-label="Higher level"]');
+  s = await snap(page);
+  assert.deepEqual([s.level, s.mode], [3, 'task'], 'the bar overrides the task level');
+  await clear(page);
+  await page.waitForSelector('text=/Next board · L3/');
+  assert.equal(await page.locator('[role="dialog"][aria-label="Board cleared"] [aria-label="Higher level"]').count(), 1, 'the cleared card has the level picker during a task too');
+  await page.evaluate(() => window.arrow.deal());
+  assert.equal((await snap(page)).level, 3, 'the override holds for the next board of this task');
+  await page.evaluate(() => { window.agent.finish(); });
+  await page.waitForTimeout(50);
+  await page.evaluate(() => { window.agent.send('thanks again'); });
+  await page.waitForFunction(() => window.arrow.game.meta.level === 1);
+  await page.evaluate(() => { window.agent.finish(); });
+
+  await page.evaluate(() => window.arrow.deal(3));
+  const standard = await snap(page);
+  await page.click('[aria-label="Settings"]');
+  await page.fill('[aria-label="Difficulty handicap"]', '2');
+  s = await snap(page);
+  assert.deepEqual([s.level, s.handicap, s.maxLives, s.w, s.h], [3, 2, standard.maxLives - 2, standard.w, standard.h], 'much harder: same level and size, two lives fewer');
+  await page.waitForSelector('text=Much harder');
+  await shot(page, '17-handicap');
+  await page.fill('[aria-label="Difficulty handicap"]', '-2');
+  assert.equal((await snap(page)).maxLives, standard.maxLives + 2, 'much easier: two lives more');
+  await page.click('[aria-label="Settings"]');
+  await clear(page);
+  result = await page.evaluate(() => window.arrow.$result.get());
+  assert.equal(result.odds, 0.7, 'and the easier board pays less');
+  await page.waitForSelector('text=/much easier ×0.70/');
   await page.close();
 
   // The plugin must survive being loaded while the agent is already working.

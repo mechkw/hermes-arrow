@@ -1,4 +1,4 @@
-// Hermes Arrow 0.4.2 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.5.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -95,6 +95,10 @@ function solve(w, h, arrows) {
     }
   }
   return { order, stuck: [...left.keys()] };
+}
+function freeShare(board) {
+  const grid = makeGrid(board.w, board.h, board.arrows);
+  return board.arrows.length ? board.arrows.filter((a) => probe(board.w, board.h, grid, a.cells).blocker === -1).length / board.arrows.length : 1;
 }
 function generate({ w, h, shape = "rect", maxLen = 6, straight = 0.55, seed = 1 }) {
   const R = rng(seed), mask = buildMask(w, h, shape);
@@ -209,11 +213,12 @@ var Game = class {
     this.pendingMiss = null;
   }
   // ---- rules -------------------------------------------------------------------------------
-  deal(spec, meta = {}) {
+  /** `board` may be supplied already built (it must match `spec`); otherwise it is generated. */
+  deal(spec, meta = {}, board = null) {
     this.spec = spec;
     this.meta = meta;
     this.maxLives = meta.lives || 3;
-    this.board = generate(spec);
+    this.board = board || generate(spec);
     this.mask = buildMask(spec.w, spec.h, spec.shape);
     this.reset();
     this.onEvent("deal");
@@ -268,6 +273,7 @@ var Game = class {
       hints: this.hints || 0,
       seconds: this.seconds,
       level: this.meta?.level || 0,
+      handicap: this.meta?.handicap || 0,
       mode: this.meta?.mode || "free",
       zoomed: this.zoom > 1.01,
       w: this.board?.w || 0,
@@ -731,21 +737,23 @@ var Game = class {
 
 // src/score.js
 var clamp2 = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-var livesFor = (n) => clamp2(2 + Math.floor((n - 1) / 2), 2, 5);
+var livesFor = (n, handicap2 = 0) => clamp2(clamp2(2 + Math.floor((n - 1) / 2), 2, 5) - handicap2, 1, 7);
+var handicapFactor = (h) => 1 + 0.15 * clamp2(Math.round(h || 0), -2, 2);
 var STREAK_IDLE_MS = 36 * 60 * 60 * 1e3;
 var liveStreak = (stats, now2 = Date.now()) => stats?.lastPlay && now2 - stats.lastPlay > STREAK_IDLE_MS ? 0 : Math.max(0, stats?.streak || 0);
 var HINT_STEP = 0.05;
 var HINT_FLOOR = 0.2;
 var hintFactor = (n) => Math.max(HINT_FLOOR, 1 - HINT_STEP * (n * (n + 1)) / 2);
 var nextHintCost = (n) => Math.round((hintFactor(n) - hintFactor(n + 1)) * 100) / 100;
-function score({ level: level2 = 1, arrows = 0, seconds = 0, lives = 0, streak = 1, hints = 0 }) {
+function score({ level: level2 = 1, arrows = 0, seconds = 0, lives = 0, streak = 1, hints = 0, handicap: handicap2 = 0 }) {
   const base = arrows * 10;
   const difficulty = 1 + (level2 - 1) * 0.25;
   const time = clamp2(arrows * 2 / Math.max(1, seconds), 0.5, 2);
   const life = 1 + 0.1 * Math.max(0, lives);
   const run = 1 + 0.1 * clamp2(streak - 1, 0, 10);
   const hint = hintFactor(Math.max(0, hints));
-  return { points: Math.round(base * difficulty * time * life * run * hint), base, difficulty, time, life, run, hint, hints };
+  const odds = handicapFactor(handicap2);
+  return { points: Math.round(base * difficulty * time * life * run * hint * odds), base, difficulty, time, life, run, hint, hints, odds, handicap: handicap2 };
 }
 function settle(stats, outcome, now2 = Date.now()) {
   const next = { boards: 0, arrows: 0, points: 0, best: 0, bestStreak: 0, ...stats, streak: liveStreak(stats, now2), lastPlay: now2 };
@@ -951,12 +959,28 @@ function estimateSeconds({ text = "", attachments = 0, history = [] } = {}) {
 }
 var heatSeconds = ({ elapsed = 0, tools = 0, subagents = 0 } = {}) => elapsed * 1.25 + tools * 6 + subagents * 40;
 var levelForTask = (task) => levelForSeconds(Math.max(task.estimate || 0, heatSeconds(task)));
+var HANDICAP_NAMES = { "-2": "Much easier", "-1": "Easier", 0: "Standard", 1: "Harder", 2: "Much harder" };
+var handicap = (h) => Math.max(-2, Math.min(2, Math.round(Number(h) || 0)));
+var BATCH = 16;
+var RANK = { "-2": 0, "-1": 0.25, 1: 0.75, 2: 1 };
 var SHAPE_POOL = ["rect", "disc", "diamond", "ring", "cross", "hourglass", "heart", "wing", "letter"];
-function boardSpec(n, { aspect = 1, seed = 1 } = {}) {
+function boardSpec(n, { aspect = 1, seed = 1, handicap: raw = 0 } = {}) {
+  const hc = handicap(raw);
   const l = level(n), a = Math.max(0.6, Math.min(1.7, aspect || 1));
   const w = Math.max(4, Math.round(l.size * Math.sqrt(a))), h = Math.max(4, Math.round(l.size / Math.sqrt(a)));
   const shape = l.n < 3 ? "rect" : SHAPE_POOL[(seed >>> 3) % SHAPE_POOL.length];
-  return { w, h, shape, maxLen: l.maxLen, straight: 0.5 + (seed >>> 7) % 20 / 100, seed };
+  return { w, h, shape, maxLen: Math.max(2, l.maxLen + hc), straight: 0.5 + (seed >>> 7) % 20 / 100, seed };
+}
+function dealBoard(n, { aspect = 1, seed = 1, handicap: raw = 0 } = {}) {
+  const hc = handicap(raw), spec = boardSpec(n, { aspect, seed, handicap: hc });
+  if (!hc) return generate(spec);
+  const batch = [];
+  for (let i = 0; i < BATCH; i++) {
+    const board = generate({ ...spec, seed: seed + i * 2654435761 >>> 0 || 1 });
+    batch.push({ board, free: freeShare(board) });
+  }
+  batch.sort((p, q) => q.free - p.free);
+  return batch[Math.round(RANK[hc] * (BATCH - 1))].board;
 }
 
 // src/tracker.js
@@ -1090,7 +1114,7 @@ function createTracker({
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.4.2";
+var VERSION = "0.5.0";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -1120,7 +1144,7 @@ function palette(el) {
   };
 }
 function create(ctx) {
-  const $snap = atom({ status: "empty" }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({}), $modal = atom(false), $fade = atom(0), $offer = atom(true);
+  const $snap = atom({ status: "empty" }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({}), $modal = atom(false), $fade = atom(0), $offer = atom(true), $handicap = atom(0);
   const stored = (key, fallback) => {
     try {
       const v = ctx.storage.get(key, fallback);
@@ -1137,12 +1161,13 @@ function create(ctx) {
   };
   let freeLevel = Math.max(1, Math.min(MAX_LEVEL, Number(stored("freeLevel", 3)) || 3));
   let stats = { boards: 0, arrows: 0, points: 0, best: 0, streak: 0, bestStreak: 0, lastPlay: 0, ...stored("stats", {}) || {} };
-  let returnTo = "/", colors = () => ({}), stopAuto = null;
+  let returnTo = "/", colors = () => ({}), stopAuto = null, taskLevel = 0;
   $stats.set(stats);
   $sound.set(stored("sound", true) !== false);
   $volume.set(Math.max(0, Math.min(1, Number(stored("volume", 0.7)) || 0)));
   $fade.set(Math.max(0, Math.min(MAX_FADE, Number(stored("fade", 0)) || 0)));
   $offer.set(stored("offer", true) !== false);
+  $handicap.set(handicap(stored("handicap", 0)));
   const sound = createSound(() => $sound.get(), () => $volume.get());
   const saveStats = (next) => {
     stats = next;
@@ -1151,7 +1176,7 @@ function create(ctx) {
   };
   const finish = (won) => {
     const s = game.snapshot();
-    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints });
+    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints, handicap: s.handicap });
     saveStats(next);
     $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
   };
@@ -1204,8 +1229,9 @@ function create(ctx) {
   function deal(forceLevel) {
     cancelAuto();
     const task = tracker.$task.get();
-    const n = forceLevel || (task.busy ? levelForTask(task) : freeLevel);
-    game.deal(boardSpec(n, { aspect: game.aspect(), seed: Math.random() * 2147483647 | 0 }), { level: n, lives: livesFor(n), mode: task.busy ? "task" : "free" });
+    const n = forceLevel || (task.busy ? taskLevel || levelForTask(task) : freeLevel);
+    const hc = $handicap.get(), options = { aspect: game.aspect(), seed: Math.random() * 2147483647 | 0, handicap: hc };
+    game.deal(boardSpec(n, options), { level: n, lives: livesFor(n, hc), handicap: hc, mode: task.busy ? "task" : "free" }, dealBoard(n, options));
   }
   function queueNext() {
     cancelAuto();
@@ -1242,6 +1268,7 @@ function create(ctx) {
     // A new task replaces a board nobody has started; a board in progress is left alone.
     onStart: () => {
       try {
+        taskLevel = 0;
         if (game.status !== "play" || !game.touched) deal();
       } catch (error) {
         report("deal", error);
@@ -1266,6 +1293,18 @@ function create(ctx) {
     freeLevel = Math.max(1, Math.min(MAX_LEVEL, n));
     store("freeLevel", freeLevel);
     deal(freeLevel);
+  };
+  const setLevel = (n) => {
+    const next = Math.max(1, Math.min(MAX_LEVEL, n));
+    if (!tracker.$task.get().busy) return setFreeLevel(next);
+    taskLevel = next;
+    deal(next);
+  };
+  const setHandicap = (v) => {
+    const next = handicap(v);
+    $handicap.set(next);
+    store("handicap", next);
+    if (game.status === "play" && !game.touched) deal(game.meta?.level);
   };
   const open = () => {
     if (!onGame()) $modal.set(true);
@@ -1309,8 +1348,8 @@ function create(ctx) {
     page: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, outline: "none", userSelect: "none", WebkitUserSelect: "none", color: "var(--ui-text-primary)" },
     bar: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px 12px", padding: "8px 12px", borderBottom: "1px solid var(--ui-stroke-tertiary)", fontSize: "0.8125rem", lineHeight: 1.2 },
     range: { width: "100%", height: 16, margin: 0, accentColor: "var(--ui-accent)", cursor: "pointer" },
-    settings: { width: 280, padding: 12, display: "grid", gap: 12, fontSize: "0.8125rem", color: "var(--ui-text-primary)" },
-    setting: { display: "grid", gridTemplateColumns: "92px 1fr 36px", alignItems: "center", gap: 8 },
+    settings: { width: 330, padding: 12, display: "grid", gap: 12, fontSize: "0.8125rem", color: "var(--ui-text-primary)" },
+    setting: { display: "grid", gridTemplateColumns: "88px 1fr 84px", alignItems: "center", gap: 8 },
     hidden: { position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" },
     grow: { flex: "1 1 0", minWidth: 0 },
     muted: { color: "var(--ui-text-tertiary)" },
@@ -1423,16 +1462,18 @@ function create(ctx) {
       /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": "Dismiss", onClick: () => tracker.dismiss(), children: "\u2715" })
     ] });
   }
-  function LevelPicker({ value }) {
-    return /* @__PURE__ */ jsxs("span", { style: S.row, children: [
-      /* @__PURE__ */ jsx(Button, { size: "sm", variant: "outline", "aria-label": "Easier", disabled: value <= 1, onClick: () => setFreeLevel(value - 1), children: "\u2212" }),
-      /* @__PURE__ */ jsxs("span", { style: { minWidth: 96, ...S.num }, children: [
-        "L",
-        value,
-        " \xB7 ",
-        level(value).name
-      ] }),
-      /* @__PURE__ */ jsx(Button, { size: "sm", variant: "outline", "aria-label": "Harder", disabled: value >= MAX_LEVEL, onClick: () => setFreeLevel(value + 1), children: "+" })
+  function LevelPicker({ value, compact = false, mode }) {
+    const variant = compact ? "ghost" : "outline";
+    const label = /* @__PURE__ */ jsxs("span", { style: { minWidth: compact ? 0 : 96, ...S.num, ...compact ? { ...S.chip, padding: "2px 6px" } : null }, children: [
+      "L",
+      value,
+      " \xB7 ",
+      level(value).name
+    ] });
+    return /* @__PURE__ */ jsxs("span", { style: { ...S.row, gap: compact ? 2 : 6, flexWrap: "nowrap" }, children: [
+      /* @__PURE__ */ jsx(Button, { size: "sm", variant, "aria-label": "Lower level", disabled: value <= 1, onClick: () => setLevel(value - 1), children: "\u2212" }),
+      compact ? /* @__PURE__ */ jsx(Tip, { label: `${mode === "task" ? "Sized to the task Hermes is working on" : "Free play"}. \u2212 and + deal a new board at another level.`, children: label }) : label,
+      /* @__PURE__ */ jsx(Button, { size: "sm", variant, "aria-label": "Higher level", disabled: value >= MAX_LEVEL, onClick: () => setLevel(value + 1), children: "+" })
     ] });
   }
   function Overlay({ snap }) {
@@ -1444,7 +1485,7 @@ function create(ctx) {
       return () => window.clearInterval(id);
     }, [auto]);
     if (snap.status === "won") {
-      const next = task.busy ? levelForTask(task) : freeLevel;
+      const next = task.busy ? taskLevel || levelForTask(task) : freeLevel;
       return /* @__PURE__ */ jsx("div", { style: S.veil, children: /* @__PURE__ */ jsxs("div", { style: S.card, role: "dialog", "aria-label": "Board cleared", children: [
         /* @__PURE__ */ jsx("div", { style: { ...S.faint, textTransform: "uppercase", letterSpacing: "0.08em" }, children: "Cleared" }),
         /* @__PURE__ */ jsxs("div", { style: { ...S.title, ...S.num, fontSize: "1.75rem", lineHeight: 1 }, children: [
@@ -1471,12 +1512,16 @@ function create(ctx) {
           " \xB7 lives \xD7",
           result.life.toFixed(1),
           result.streak > 1 ? ` \xB7 streak ${result.streak} \xD7${result.run.toFixed(1)}` : "",
-          result.hints > 0 ? ` \xB7 ${result.hints} hint${result.hints === 1 ? "" : "s"} \xD7${result.hint.toFixed(2)}` : ""
+          result.hints > 0 ? ` \xB7 ${result.hints} hint${result.hints === 1 ? "" : "s"} \xD7${result.hint.toFixed(2)}` : "",
+          result.handicap ? ` \xB7 ${HANDICAP_NAMES[result.handicap].toLowerCase()} \xD7${result.odds.toFixed(2)}` : ""
         ] }),
-        task.busy ? /* @__PURE__ */ jsxs(Button, { onClick: () => deal(), children: [
-          "Next board \xB7 L",
-          next,
-          auto ? ` (${Math.max(1, Math.ceil((auto - Date.now()) / 1e3))})` : ""
+        task.busy ? /* @__PURE__ */ jsxs(Fragment, { children: [
+          /* @__PURE__ */ jsx(LevelPicker, { value: next }),
+          /* @__PURE__ */ jsxs(Button, { onClick: () => deal(), children: [
+            "Next board \xB7 L",
+            next,
+            auto ? ` (${Math.max(1, Math.ceil((auto - Date.now()) / 1e3))})` : ""
+          ] })
         ] }) : /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsx(LevelPicker, { value: freeLevel }),
           /* @__PURE__ */ jsx(Button, { onClick: () => deal(freeLevel), children: "Play again" })
@@ -1503,6 +1548,7 @@ function create(ctx) {
           result.lostStreak,
           " streak ended"
         ] }),
+        /* @__PURE__ */ jsx(LevelPicker, { value: snap.level }),
         /* @__PURE__ */ jsxs("div", { style: S.row, children: [
           /* @__PURE__ */ jsx(Button, { onClick: () => restart(), children: "Retry board" }),
           /* @__PURE__ */ jsx(Button, { variant: "outline", onClick: () => deal(snap.level), children: "New board" })
@@ -1512,7 +1558,7 @@ function create(ctx) {
     return null;
   }
   function Settings({ modal }) {
-    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer);
+    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer), hc = useValue($handicap);
     return /* @__PURE__ */ jsxs(Popover, { children: [
       /* @__PURE__ */ jsx(PopoverTrigger, { asChild: true, children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": "Settings", children: "\u2699" }) }),
       /* @__PURE__ */ jsxs(PopoverContent, { align: "end", style: S.settings, onKeyDown: (e) => e.stopPropagation(), children: [
@@ -1524,6 +1570,12 @@ function create(ctx) {
             "%"
           ] })
         ] }),
+        /* @__PURE__ */ jsxs("label", { style: S.setting, children: [
+          /* @__PURE__ */ jsx("span", { children: "Difficulty" }),
+          /* @__PURE__ */ jsx("input", { type: "range", min: "-2", max: "2", step: "1", value: hc, "aria-label": "Difficulty handicap", onChange: (e) => setHandicap(e.target.value), style: S.range }),
+          /* @__PURE__ */ jsx("span", { style: { ...S.muted, textAlign: "right" }, children: HANDICAP_NAMES[hc] })
+        ] }),
+        /* @__PURE__ */ jsx("div", { style: { ...S.faint, marginTop: -6 }, children: hc ? `Every level's boards are ${hc > 0 ? "harder" : "easier"}: ${hc > 0 ? "fewer" : "more"} arrows free to move, ${Math.abs(hc)} ${hc > 0 ? "fewer" : "more"} ${Math.abs(hc) === 1 ? "life" : "lives"}, points \xD7${handicapFactor(hc).toFixed(2)}.` : "Shifts how hard each level is without changing its size." }),
         modal && /* @__PURE__ */ jsxs("label", { style: S.setting, children: [
           /* @__PURE__ */ jsx("span", { children: "Transparency" }),
           /* @__PURE__ */ jsx("input", { type: "range", min: "0", max: MAX_FADE * 100, step: "5", value: Math.round(fade * 100), "aria-label": "Transparency", onChange: (e) => setFade(e.target.value / 100), style: S.range }),
@@ -1542,7 +1594,8 @@ function create(ctx) {
   function Page({ modal = false }) {
     const canvas = useRef(null), root = useRef(null);
     const snap = useValue($snap), task = useValue(tracker.$task), soundOn = useValue($sound), volume = useValue($volume);
-    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100);
+    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100), fade = useValue($fade);
+    const barStyle = modal && fade > 0 ? { ...S.bar, background: "color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) 50%, transparent)" } : S.bar;
     useEffect(() => {
       colors = palette(canvas.current);
       game.attach(canvas.current);
@@ -1569,13 +1622,9 @@ function create(ctx) {
     const playing = snap.status === "play";
     return /* @__PURE__ */ jsxs("div", { ref: root, style: S.page, tabIndex: -1, onKeyDown: key, "data-hermes-arrow": VERSION, children: [
       /* @__PURE__ */ jsx(DoneBanner, {}),
-      /* @__PURE__ */ jsxs("div", { style: S.bar, children: [
-        /* @__PURE__ */ jsx(Tip, { label: snap.mode === "task" ? "Sized to the task Hermes is working on" : "Free play", children: /* @__PURE__ */ jsxs("span", { style: S.chip, children: [
-          "L",
-          snap.level || freeLevel,
-          " \xB7 ",
-          level(snap.level || freeLevel).name
-        ] }) }),
+      /* @__PURE__ */ jsxs("div", { style: barStyle, "data-bar": "", children: [
+        /* @__PURE__ */ jsx(LevelPicker, { value: snap.level || freeLevel, compact: true, mode: snap.mode }),
+        snap.handicap !== 0 && snap.handicap != null && /* @__PURE__ */ jsx(Tip, { label: "Difficulty handicap, set under \u2699. It changes how hard each level's boards are, and what they pay.", children: /* @__PURE__ */ jsx("span", { style: S.chip, children: HANDICAP_NAMES[snap.handicap] }) }),
         /* @__PURE__ */ jsxs("span", { style: { ...S.num, fontWeight: 600 }, children: [
           snap.left ?? 0,
           /* @__PURE__ */ jsx("span", { style: { ...S.muted, fontWeight: 400 }, children: " left" })
@@ -1601,7 +1650,6 @@ function create(ctx) {
           modal && /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": "Close game", onClick: close, children: "\u2715" })
         ] })
       ] }),
-      !task.busy && playing && !snap.cleared && /* @__PURE__ */ jsx("div", { style: { ...S.bar, borderBottom: "none", justifyContent: "center", paddingBottom: 0 }, children: /* @__PURE__ */ jsx(LevelPicker, { value: freeLevel }) }),
       /* @__PURE__ */ jsxs("div", { style: S.stage, children: [
         /* @__PURE__ */ jsx("canvas", { ref: canvas, style: S.canvas, "aria-label": `Arrow puzzle, ${snap.left ?? 0} arrows left. Tap an arrow whose path to the edge is clear. Hold an arrow to preview its path. Double-click to zoom.` }),
         /* @__PURE__ */ jsx(Overlay, { snap })
@@ -1686,7 +1734,7 @@ function create(ctx) {
     if (!task.busy || !offer || isOpen || onGame()) return null;
     return /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: open, children: "\u27A4 Play Arrow" });
   }
-  return { report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  return { $handicap, setHandicap, report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 var plugin_default = {
   id: ID,

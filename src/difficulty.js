@@ -1,3 +1,5 @@
+import { generate, freeShare } from './core.js';
+
 // How hard a board should be for the task the agent is working on. Pure, no DOM.
 //
 // Two signals feed it:
@@ -54,13 +56,41 @@ export const heatSeconds = ({ elapsed = 0, tools = 0, subagents = 0 } = {}) => e
 /** Level for the next board dealt during a task. */
 export const levelForTask = task => levelForSeconds(Math.max(task.estimate || 0, heatSeconds(task)));
 
+
+/**
+ * The handicap shifts how hard a board is WITHOUT changing its level or size: −2 (much easier) to
+ * +2 (much harder). Boards are random, and at any level some come out with half their arrows free
+ * to leave and others with a quarter. A handicap deals a batch and keeps one from the easy or the
+ * hard end of it. Arrows also get a cell shorter or longer, and lives and points follow (score.js).
+ */
+export const HANDICAPS = [-2, -1, 0, 1, 2];
+export const HANDICAP_NAMES = { '-2': 'Much easier', '-1': 'Easier', 0: 'Standard', 1: 'Harder', 2: 'Much harder' };
+export const handicap = h => Math.max(-2, Math.min(2, Math.round(Number(h) || 0)));
+const BATCH = 16;
+// Where in a batch sorted easiest-first each handicap picks from.
+const RANK = { '-2': 0, '-1': 0.25, 1: 0.75, 2: 1 };
+
 const SHAPE_POOL = ['rect', 'disc', 'diamond', 'ring', 'cross', 'hourglass', 'heart', 'wing', 'letter'];
 
 /** Concrete generator settings for a level, fitted to the viewport's aspect ratio. */
-export function boardSpec(n, { aspect = 1, seed = 1 } = {}) {
+export function boardSpec(n, { aspect = 1, seed = 1, handicap: raw = 0 } = {}) {
+  const hc = handicap(raw);
   const l = level(n), a = Math.max(0.6, Math.min(1.7, aspect || 1));
   const w = Math.max(4, Math.round(l.size * Math.sqrt(a))), h = Math.max(4, Math.round(l.size / Math.sqrt(a)));
   // Small boards stay rectangular: a silhouette needs room to read.
   const shape = l.n < 3 ? 'rect' : SHAPE_POOL[(seed >>> 3) % SHAPE_POOL.length];
-  return { w, h, shape, maxLen: l.maxLen, straight: 0.5 + ((seed >>> 7) % 20) / 100, seed };
+  return { w, h, shape, maxLen: Math.max(2, l.maxLen + hc), straight: 0.5 + ((seed >>> 7) % 20) / 100, seed };
+}
+
+/** Build the board for a level and handicap. Same inputs, same board. */
+export function dealBoard(n, { aspect = 1, seed = 1, handicap: raw = 0 } = {}) {
+  const hc = handicap(raw), spec = boardSpec(n, { aspect, seed, handicap: hc });
+  if (!hc) return generate(spec);
+  const batch = [];
+  for (let i = 0; i < BATCH; i++) {
+    const board = generate({ ...spec, seed: (seed + i * 0x9e3779b1) >>> 0 || 1 });
+    batch.push({ board, free: freeShare(board) });
+  }
+  batch.sort((p, q) => q.free - p.free);
+  return batch[Math.round(RANK[hc] * (BATCH - 1))].board;
 }

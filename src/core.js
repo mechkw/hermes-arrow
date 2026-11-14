@@ -80,6 +80,12 @@ export function solve(w, h, arrows) {
   return { order, stuck: [...left.keys()] };
 }
 
+/** Share of arrows that can leave right now, 0..1. The fewer, the harder the board is to start. */
+export function freeShare(board) {
+  const grid = makeGrid(board.w, board.h, board.arrows);
+  return board.arrows.length ? board.arrows.filter(a => probe(board.w, board.h, grid, a.cells).blocker === -1).length / board.arrows.length : 1;
+}
+
 /**
  * Build a solvable board.
  *   w, h      grid size

@@ -172,3 +172,21 @@ test('the tracker stays quiet while a turn streams', async () => {
   assert.equal(published, 2, 'the turn ending is published');
   tracker.dispose();
 });
+
+import { freeShare } from '../src/core.js';
+import { dealBoard, HANDICAPS } from '../src/difficulty.js';
+import { handicapFactor } from '../src/score.js';
+
+test('the handicap makes a level harder or easier without resizing it', () => {
+  for (const n of [1, 3, 5, 7]) {
+    const mean = hc => { let t = 0; for (let s = 1; s <= 16; s++) { const b = dealBoard(n, { seed: s * 104729 + n, handicap: hc }); check(b); t += freeShare(b); } return t / 16; };
+    const shares = HANDICAPS.map(mean);
+    for (let i = 1; i < shares.length; i++) assert.ok(shares[i] < shares[i - 1], `level ${n}: each step leaves fewer arrows free (${shares.map(v => v.toFixed(2))})`);
+    const a = dealBoard(n, { seed: 77, handicap: 2 }), b = dealBoard(n, { seed: 77, handicap: -2 }), c = dealBoard(n, { seed: 77, handicap: 2 });
+    assert.deepEqual([a.w, a.h, a.shape], [b.w, b.h, b.shape], 'same size and silhouette');
+    assert.deepEqual(a.arrows, c.arrows, 'deterministic');
+  }
+  assert.deepEqual(HANDICAPS.map(h => livesFor(3, h)), [5, 4, 3, 2, 1]);
+  assert.deepEqual(HANDICAPS.map(handicapFactor), [0.7, 0.85, 1, 1.15, 1.3]);
+  assert.ok(score({ level: 3, arrows: 30, seconds: 60, lives: 2, handicap: 2 }).points > score({ level: 3, arrows: 30, seconds: 60, lives: 2 }).points);
+});

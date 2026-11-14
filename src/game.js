@@ -24,9 +24,10 @@ export class Game {
 
   // ---- rules -------------------------------------------------------------------------------
 
-  deal(spec, meta = {}) {
+  /** `board` may be supplied already built (it must match `spec`); otherwise it is generated. */
+  deal(spec, meta = {}, board = null) {
     this.spec = spec; this.meta = meta; this.maxLives = meta.lives || 3;
-    this.board = generate(spec);
+    this.board = board || generate(spec);
     this.mask = buildMask(spec.w, spec.h, spec.shape);
     this.reset();
     this.onEvent('deal');
@@ -53,7 +54,7 @@ export class Game {
 
   snapshot() {
     return { status: this.status, left: this.left, total: this.total, cleared: this.cleared, lives: this.lives, maxLives: this.maxLives, started: !!this.startedAt,
-      mistakes: this.mistakes, hints: this.hints || 0, seconds: this.seconds, level: this.meta?.level || 0, mode: this.meta?.mode || 'free',
+      mistakes: this.mistakes, hints: this.hints || 0, seconds: this.seconds, level: this.meta?.level || 0, handicap: this.meta?.handicap || 0, mode: this.meta?.mode || 'free',
       zoomed: this.zoom > 1.01, w: this.board?.w || 0, h: this.board?.h || 0 };
   }
 

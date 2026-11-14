@@ -3,7 +3,9 @@
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** Harder boards forgive more: 2 lives at the bottom, 5 at the top. */
-export const livesFor = n => clamp(2 + Math.floor((n - 1) / 2), 2, 5);
+export const livesFor = (n, handicap = 0) => clamp(clamp(2 + Math.floor((n - 1) / 2), 2, 5) - handicap, 1, 7);
+/** A harder handicap pays 15% more per step, an easier one 15% less. */
+export const handicapFactor = h => 1 + 0.15 * clamp(Math.round(h || 0), -2, 2);
 
 export const STREAK_IDLE_MS = 36 * 60 * 60 * 1000;
 
@@ -27,15 +29,17 @@ export const nextHintCost = n => Math.round((hintFactor(n) - hintFactor(n + 1)) 
  *   lives       +10% per life still held
  *   streak      +10% per consecutive win before this one, capped at +100%
  *   hints       see hintFactor
+ *   handicap    see handicapFactor
  */
-export function score({ level = 1, arrows = 0, seconds = 0, lives = 0, streak = 1, hints = 0 }) {
+export function score({ level = 1, arrows = 0, seconds = 0, lives = 0, streak = 1, hints = 0, handicap = 0 }) {
   const base = arrows * 10;
   const difficulty = 1 + (level - 1) * 0.25;
   const time = clamp((arrows * 2) / Math.max(1, seconds), 0.5, 2);
   const life = 1 + 0.1 * Math.max(0, lives);
   const run = 1 + 0.1 * clamp(streak - 1, 0, 10);
   const hint = hintFactor(Math.max(0, hints));
-  return { points: Math.round(base * difficulty * time * life * run * hint), base, difficulty, time, life, run, hint, hints };
+  const odds = handicapFactor(handicap);
+  return { points: Math.round(base * difficulty * time * life * run * hint * odds), base, difficulty, time, life, run, hint, hints, odds, handicap };
 }
 
 /** Fold a finished board into the saved stats. Returns new stats; a win also returns its score. */

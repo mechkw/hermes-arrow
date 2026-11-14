@@ -33,6 +33,9 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 - **Double-click** the board to step through three zoom levels (fit, 1.75×, 3×). **Drag** to move a zoomed board. Scroll and pinch also zoom.
 - Keys: `H` hint, `R` restart, `F` fit, `M` mute, `[` / `]` volume, `N` new board (free play).
 - Mute (♪) stays in the header; the volume slider is under ⚙. The level is remembered, and moving it un-mutes.
+- `−` / `+` around the level in the top bar (and on the cleared and jammed cards) deal a board at another level at any time. During a task that overrides the level chosen for it until the next task starts.
+- Difficulty handicap under ⚙, from Much easier to Much harder. It keeps the level and board size and deals from the easy or hard end of a batch of 16 random boards (ranked by how many arrows can leave at the start), with one life more or fewer and points ×0.85 or ×1.15 per step.
+- In the see-through modal the top bar is always halfway between the board's opacity and solid.
 - Hints cost points and each costs more than the last: 5%, 10%, 15%… of the board's points (5, 15, 30, 50, 75% in total), never below 20% of the board. The Hint button shows the next price.
 - A tap that lands on a blocked arrow within a quarter-cell or so of one that can leave goes to the one that can leave.
 

@@ -8,12 +8,12 @@ import {
   ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS, Switch, Tip, useValue
 } from '@hermes/plugin-sdk';
 import { Game } from './game.js';
-import { livesFor, liveStreak, nextHintCost, settle } from './score.js';
+import { handicapFactor, livesFor, liveStreak, nextHintCost, settle } from './score.js';
 import { createSound } from './sound.js';
-import { boardSpec, level, levelForTask, MAX_LEVEL } from './difficulty.js';
+import { boardSpec, dealBoard, handicap, HANDICAP_NAMES, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.2';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.5.0';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -42,23 +42,25 @@ function palette(el) {
 
 function create(ctx) {
   const $snap = atom({ status: 'empty' }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({}),
-    $modal = atom(false), $fade = atom(0), $offer = atom(true);
+    $modal = atom(false), $fade = atom(0), $offer = atom(true), $handicap = atom(0);
   const stored = (key, fallback) => { try { const v = ctx.storage.get(key, fallback); return v == null ? fallback : v; } catch { return fallback; } };
   const store = (key, value) => { try { ctx.storage.set(key, value); } catch { /* storage is best-effort */ } };
   let freeLevel = Math.max(1, Math.min(MAX_LEVEL, Number(stored('freeLevel', 3)) || 3));
   let stats = { boards: 0, arrows: 0, points: 0, best: 0, streak: 0, bestStreak: 0, lastPlay: 0, ...(stored('stats', {}) || {}) };
-  let returnTo = '/', colors = () => ({}), stopAuto = null;
+  // taskLevel: a level the player chose over the one picked for the running task; 0 = follow the task.
+  let returnTo = '/', colors = () => ({}), stopAuto = null, taskLevel = 0;
   $stats.set(stats);
   $sound.set(stored('sound', true) !== false);
   $volume.set(Math.max(0, Math.min(1, Number(stored('volume', 0.7)) || 0)));
   $fade.set(Math.max(0, Math.min(MAX_FADE, Number(stored('fade', 0)) || 0)));
   $offer.set(stored('offer', true) !== false);
+  $handicap.set(handicap(stored('handicap', 0)));
   const sound = createSound(() => $sound.get(), () => $volume.get());
   const saveStats = next => { stats = next; store('stats', stats); $stats.set(stats); };
   // A board is over: bank the points, move the streak.
   const finish = won => {
     const s = game.snapshot();
-    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints });
+    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints, handicap: s.handicap });
     saveStats(next);
     $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
   };
@@ -92,8 +94,9 @@ function create(ctx) {
   function deal(forceLevel) {
     cancelAuto();
     const task = tracker.$task.get();
-    const n = forceLevel || (task.busy ? levelForTask(task) : freeLevel);
-    game.deal(boardSpec(n, { aspect: game.aspect(), seed: (Math.random() * 0x7fffffff) | 0 }), { level: n, lives: livesFor(n), mode: task.busy ? 'task' : 'free' });
+    const n = forceLevel || (task.busy ? taskLevel || levelForTask(task) : freeLevel);
+    const hc = $handicap.get(), options = { aspect: game.aspect(), seed: (Math.random() * 0x7fffffff) | 0, handicap: hc };
+    game.deal(boardSpec(n, options), { level: n, lives: livesFor(n, hc), handicap: hc, mode: task.busy ? 'task' : 'free' }, dealBoard(n, options));
   }
 
   // While the agent is still working, a cleared board is followed by the next one on its own.
@@ -122,7 +125,7 @@ function create(ctx) {
     onEvent: (type, fn) => ctx.onEvent(type, fn),
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
     // A new task replaces a board nobody has started; a board in progress is left alone.
-    onStart: () => { try { if (game.status !== 'play' || !game.touched) deal(); } catch (error) { report('deal', error); } }
+    onStart: () => { try { taskLevel = 0; if (game.status !== 'play' || !game.touched) deal(); } catch (error) { report('deal', error); } }
   });
 
   // Hear the agent finish while your eyes are on the board.
@@ -137,6 +140,17 @@ function create(ctx) {
 
   const restart = () => { game.reset(); sound.play('deal'); };
   const setFreeLevel = n => { freeLevel = Math.max(1, Math.min(MAX_LEVEL, n)); store('freeLevel', freeLevel); deal(freeLevel); };
+  const setLevel = n => {
+    const next = Math.max(1, Math.min(MAX_LEVEL, n));
+    if (!tracker.$task.get().busy) return setFreeLevel(next);
+    taskLevel = next; deal(next);
+  };
+  // Applies from the next board; a board nobody has started is swapped right away.
+  const setHandicap = v => {
+    const next = handicap(v);
+    $handicap.set(next); store('handicap', next);
+    if (game.status === 'play' && !game.touched) deal(game.meta?.level);
+  };
   // The game opens over the chat, so the agent stays in view. The sidebar entry is the full-page version.
   const open = () => { if (!onGame()) $modal.set(true); };
   const close = () => $modal.set(false);
@@ -163,8 +177,8 @@ function create(ctx) {
     page: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, outline: 'none', userSelect: 'none', WebkitUserSelect: 'none', color: 'var(--ui-text-primary)' },
     bar: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px', padding: '8px 12px', borderBottom: '1px solid var(--ui-stroke-tertiary)', fontSize: '0.8125rem', lineHeight: 1.2 },
     range: { width: '100%', height: 16, margin: 0, accentColor: 'var(--ui-accent)', cursor: 'pointer' },
-    settings: { width: 280, padding: 12, display: 'grid', gap: 12, fontSize: '0.8125rem', color: 'var(--ui-text-primary)' },
-    setting: { display: 'grid', gridTemplateColumns: '92px 1fr 36px', alignItems: 'center', gap: 8 },
+    settings: { width: 330, padding: 12, display: 'grid', gap: 12, fontSize: '0.8125rem', color: 'var(--ui-text-primary)' },
+    setting: { display: 'grid', gridTemplateColumns: '88px 1fr 84px', alignItems: 'center', gap: 8 },
     hidden: { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' },
     grow: { flex: '1 1 0', minWidth: 0 },
     muted: { color: 'var(--ui-text-tertiary)' },
@@ -239,12 +253,16 @@ function create(ctx) {
     );
   }
 
-  function LevelPicker({ value }) {
+  // Change the level of the board in front of you. During a task this overrides the level picked
+  // for it, until the next task starts.
+  function LevelPicker({ value, compact = false, mode }) {
+    const variant = compact ? 'ghost' : 'outline';
+    const label = <span style={{ minWidth: compact ? 0 : 96, ...S.num, ...(compact ? { ...S.chip, padding: '2px 6px' } : null) }}>L{value} · {level(value).name}</span>;
     return (
-      <span style={S.row}>
-        <Button size="sm" variant="outline" aria-label="Easier" disabled={value <= 1} onClick={() => setFreeLevel(value - 1)}>−</Button>
-        <span style={{ minWidth: 96, ...S.num }}>L{value} · {level(value).name}</span>
-        <Button size="sm" variant="outline" aria-label="Harder" disabled={value >= MAX_LEVEL} onClick={() => setFreeLevel(value + 1)}>+</Button>
+      <span style={{ ...S.row, gap: compact ? 2 : 6, flexWrap: 'nowrap' }}>
+        <Button size="sm" variant={variant} aria-label="Lower level" disabled={value <= 1} onClick={() => setLevel(value - 1)}>−</Button>
+        {compact ? <Tip label={`${mode === 'task' ? 'Sized to the task Hermes is working on' : 'Free play'}. − and + deal a new board at another level.`}>{label}</Tip> : label}
+        <Button size="sm" variant={variant} aria-label="Higher level" disabled={value >= MAX_LEVEL} onClick={() => setLevel(value + 1)}>+</Button>
       </span>
     );
   }
@@ -254,7 +272,7 @@ function create(ctx) {
     const [, tick] = useState(0);
     useEffect(() => { if (!auto) return; const id = window.setInterval(() => tick(n => n + 1), 250); return () => window.clearInterval(id); }, [auto]);
     if (snap.status === 'won') {
-      const next = task.busy ? levelForTask(task) : freeLevel;
+      const next = task.busy ? taskLevel || levelForTask(task) : freeLevel;
       return (
         <div style={S.veil}><div style={S.card} role="dialog" aria-label="Board cleared">
           <div style={{ ...S.faint, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Cleared</div>
@@ -262,11 +280,12 @@ function create(ctx) {
           <div style={{ ...S.muted, ...S.num }}>{snap.total} arrows · {clock(snap.seconds)} · {snap.lives}/{snap.maxLives} lives</div>
           {result?.points > 0 && (
             <div style={{ ...S.faint, ...S.num }}>
-              L{snap.level} ×{result.difficulty.toFixed(2)} · time ×{result.time.toFixed(2)} · lives ×{result.life.toFixed(1)}{result.streak > 1 ? ` · streak ${result.streak} ×${result.run.toFixed(1)}` : ''}{result.hints > 0 ? ` · ${result.hints} hint${result.hints === 1 ? '' : 's'} ×${result.hint.toFixed(2)}` : ''}
+              L{snap.level} ×{result.difficulty.toFixed(2)} · time ×{result.time.toFixed(2)} · lives ×{result.life.toFixed(1)}{result.streak > 1 ? ` · streak ${result.streak} ×${result.run.toFixed(1)}` : ''}{result.hints > 0 ? ` · ${result.hints} hint${result.hints === 1 ? '' : 's'} ×${result.hint.toFixed(2)}` : ''}{result.handicap ? ` · ${HANDICAP_NAMES[result.handicap].toLowerCase()} ×${result.odds.toFixed(2)}` : ''}
             </div>
           )}
           {task.busy
-            ? <Button onClick={() => deal()}>Next board · L{next}{auto ? ` (${Math.max(1, Math.ceil((auto - Date.now()) / 1000))})` : ''}</Button>
+            ? <><LevelPicker value={next} /><Button onClick={() => deal()}>Next board · L{next}{auto ? ` (${Math.max(1, Math.ceil((auto - Date.now()) / 1000))})` : ''}</Button>
+</>
             : <><LevelPicker value={freeLevel} /><Button onClick={() => deal(freeLevel)}>Play again</Button></>}
           <div style={{ ...S.faint, ...S.num }}>{fmt(result?.total ?? stats.points)} points · {stats.boards} boards all-time</div>
         </div></div>
@@ -278,6 +297,7 @@ function create(ctx) {
           <div style={{ ...S.title, color: 'var(--ui-red)' }}>Jammed</div>
           <div style={S.muted}>{snap.left} of {snap.total} arrows left</div>
           {result?.lostStreak > 1 && <div style={{ ...S.chip, color: 'var(--ui-yellow)' }}>×{result.lostStreak} streak ended</div>}
+          <LevelPicker value={snap.level} />
           <div style={S.row}>
             <Button onClick={() => restart()}>Retry board</Button>
             <Button variant="outline" onClick={() => deal(snap.level)}>New board</Button>
@@ -290,7 +310,7 @@ function create(ctx) {
 
   // Volume, how see-through the modal is, and whether the composer offers a game.
   function Settings({ modal }) {
-    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer);
+    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer), hc = useValue($handicap);
     return (
       <Popover>
         <PopoverTrigger asChild><Button size="sm" variant="ghost" aria-label="Settings">⚙</Button></PopoverTrigger>
@@ -300,6 +320,12 @@ function create(ctx) {
             <input type="range" min="0" max="100" step="5" value={Math.round(volume * 100)} aria-label="Volume" onChange={e => setVolume(e.target.value / 100)} style={S.range} />
             <span style={{ ...S.num, ...S.muted, textAlign: 'right' }}>{Math.round(volume * 100)}%</span>
           </label>
+          <label style={S.setting}>
+            <span>Difficulty</span>
+            <input type="range" min="-2" max="2" step="1" value={hc} aria-label="Difficulty handicap" onChange={e => setHandicap(e.target.value)} style={S.range} />
+            <span style={{ ...S.muted, textAlign: 'right' }}>{HANDICAP_NAMES[hc]}</span>
+          </label>
+          <div style={{ ...S.faint, marginTop: -6 }}>{hc ? `Every level's boards are ${hc > 0 ? 'harder' : 'easier'}: ${hc > 0 ? 'fewer' : 'more'} arrows free to move, ${Math.abs(hc)} ${hc > 0 ? 'fewer' : 'more'} ${Math.abs(hc) === 1 ? 'life' : 'lives'}, points ×${handicapFactor(hc).toFixed(2)}.` : 'Shifts how hard each level is without changing its size.'}</div>
           {modal && (
             <label style={S.setting}>
               <span>Transparency</span>
@@ -319,7 +345,9 @@ function create(ctx) {
   function Page({ modal = false }) {
     const canvas = useRef(null), root = useRef(null);
     const snap = useValue($snap), task = useValue(tracker.$task), soundOn = useValue($sound), volume = useValue($volume);
-    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100);
+    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100), fade = useValue($fade);
+    // In the see-through modal the bar sits halfway between the board's opacity and solid, so it always reads.
+    const barStyle = modal && fade > 0 ? { ...S.bar, background: 'color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) 50%, transparent)' } : S.bar;
     useEffect(() => {
       colors = palette(canvas.current);
       game.attach(canvas.current);
@@ -338,10 +366,9 @@ function create(ctx) {
     return (
       <div ref={root} style={S.page} tabIndex={-1} onKeyDown={key} data-hermes-arrow={VERSION}>
         <DoneBanner />
-        <div style={S.bar}>
-          <Tip label={snap.mode === 'task' ? 'Sized to the task Hermes is working on' : 'Free play'}>
-            <span style={S.chip}>L{snap.level || freeLevel} · {level(snap.level || freeLevel).name}</span>
-          </Tip>
+        <div style={barStyle} data-bar="">
+          <LevelPicker value={snap.level || freeLevel} compact mode={snap.mode} />
+          {snap.handicap !== 0 && snap.handicap != null && <Tip label="Difficulty handicap, set under ⚙. It changes how hard each level's boards are, and what they pay."><span style={S.chip}>{HANDICAP_NAMES[snap.handicap]}</span></Tip>}
           <span style={{ ...S.num, fontWeight: 600 }}>{snap.left ?? 0}<span style={{ ...S.muted, fontWeight: 400 }}> left</span></span>
           <Lives lives={snap.lives ?? 3} max={snap.maxLives ?? 3} />
           <Timer snap={snap} />
@@ -359,9 +386,6 @@ function create(ctx) {
             {modal && <Button size="sm" variant="ghost" aria-label="Close game" onClick={close}>✕</Button>}
           </span>
         </div>
-        {!task.busy && playing && !snap.cleared && (
-          <div style={{ ...S.bar, borderBottom: 'none', justifyContent: 'center', paddingBottom: 0 }}><LevelPicker value={freeLevel} /></div>
-        )}
         <div style={S.stage}>
           <canvas ref={canvas} style={S.canvas} aria-label={`Arrow puzzle, ${snap.left ?? 0} arrows left. Tap an arrow whose path to the edge is clear. Hold an arrow to preview its path. Double-click to zoom.`} />
           <Overlay snap={snap} />
@@ -422,7 +446,7 @@ function create(ctx) {
     return <Button size="sm" variant="ghost" onClick={open}>➤ Play Arrow</Button>;
   }
 
-  return { report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  return { $handicap, setHandicap, report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 
 export default {
