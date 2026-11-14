@@ -4,15 +4,18 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  atom, Button, COMPOSER_AREAS, haptic, host, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS, Tip, useValue
+  atom, Button, COMPOSER_AREAS, Dialog, DialogContent, DialogTitle, haptic, host, PALETTE_AREA, Popover, PopoverContent, PopoverTrigger,
+  ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS, Switch, Tip, useValue
 } from '@hermes/plugin-sdk';
 import { Game } from './game.js';
-import { livesFor, liveStreak, settle } from './score.js';
+import { livesFor, liveStreak, nextHintCost, settle } from './score.js';
 import { createSound } from './sound.js';
 import { boardSpec, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.3.1';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.0';
+// Most see-through the modal goes, and its size.
+const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
 
 const clock = seconds => {
@@ -38,7 +41,8 @@ function palette(el) {
 }
 
 function create(ctx) {
-  const $snap = atom({ status: 'empty' }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({});
+  const $snap = atom({ status: 'empty' }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({}),
+    $modal = atom(false), $fade = atom(0), $offer = atom(true);
   const stored = (key, fallback) => { try { const v = ctx.storage.get(key, fallback); return v == null ? fallback : v; } catch { return fallback; } };
   const store = (key, value) => { try { ctx.storage.set(key, value); } catch { /* storage is best-effort */ } };
   let freeLevel = Math.max(1, Math.min(MAX_LEVEL, Number(stored('freeLevel', 3)) || 3));
@@ -47,12 +51,14 @@ function create(ctx) {
   $stats.set(stats);
   $sound.set(stored('sound', true) !== false);
   $volume.set(Math.max(0, Math.min(1, Number(stored('volume', 0.7)) || 0)));
+  $fade.set(Math.max(0, Math.min(MAX_FADE, Number(stored('fade', 0)) || 0)));
+  $offer.set(stored('offer', true) !== false);
   const sound = createSound(() => $sound.get(), () => $volume.get());
   const saveStats = next => { stats = next; store('stats', stats); $stats.set(stats); };
   // A board is over: bank the points, move the streak.
   const finish = won => {
     const s = game.snapshot();
-    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives });
+    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints });
     saveStats(next);
     $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
   };
@@ -110,12 +116,16 @@ function create(ctx) {
   const stopDone = tracker.$done.subscribe(done => {
     if (!done || done.at === doneAt) return;
     doneAt = done.at;
-    if (done.duration >= 2 && onGame()) sound.play('agentDone');
+    if (done.duration >= 2 && (onGame() || $modal.get())) sound.play('agentDone');
   });
 
   const restart = () => { game.reset(); sound.play('deal'); };
   const setFreeLevel = n => { freeLevel = Math.max(1, Math.min(MAX_LEVEL, n)); store('freeLevel', freeLevel); deal(freeLevel); };
-  const open = () => { if (!onGame()) { returnTo = hashPath(); host.navigate(ROUTE); } };
+  // The game opens over the chat, so the agent stays in view. The sidebar entry is the full-page version.
+  const open = () => { if (!onGame()) $modal.set(true); };
+  const close = () => $modal.set(false);
+  const setFade = v => { const next = Math.max(0, Math.min(MAX_FADE, Math.round(v * 20) / 20)); $fade.set(next); store('fade', next); };
+  const setOffer = on => { $offer.set(!!on); store('offer', !!on); };
   const toggleSound = () => { const on = !$sound.get(); $sound.set(on); store('sound', on); if (on) sound.play('move', 0.5); };
   // Moving the volume always un-mutes, and plays a note so you can hear the new level.
   let lastBlip = 0;
@@ -125,14 +135,21 @@ function create(ctx) {
     if (!$sound.get()) { $sound.set(true); store('sound', true); }
     if (Date.now() - lastBlip > 110) { lastBlip = Date.now(); sound.play('move', 0.5); }
   };
-  const back = () => { tracker.dismiss(); host.navigate(returnTo && returnTo.split('?')[0] !== ROUTE ? returnTo : '/'); };
+  const back = () => {
+    tracker.dismiss();
+    if ($modal.get()) return close();
+    host.navigate(returnTo && returnTo.split('?')[0] !== ROUTE ? returnTo : '/');
+  };
 
   // ---- UI ----------------------------------------------------------------------------------
 
   const S = {
     page: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, outline: 'none', userSelect: 'none', WebkitUserSelect: 'none', color: 'var(--ui-text-primary)' },
     bar: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px', padding: '8px 12px', borderBottom: '1px solid var(--ui-stroke-tertiary)', fontSize: '0.8125rem', lineHeight: 1.2 },
-    volume: { width: 64, height: 16, margin: 0, accentColor: 'var(--ui-accent)', cursor: 'pointer' },
+    range: { width: '100%', height: 16, margin: 0, accentColor: 'var(--ui-accent)', cursor: 'pointer' },
+    settings: { width: 280, padding: 12, display: 'grid', gap: 12, fontSize: '0.8125rem', color: 'var(--ui-text-primary)' },
+    setting: { display: 'grid', gridTemplateColumns: '92px 1fr 36px', alignItems: 'center', gap: 8 },
+    hidden: { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' },
     grow: { flex: '1 1 0', minWidth: 0 },
     muted: { color: 'var(--ui-text-tertiary)' },
     faint: { color: 'var(--ui-text-quaternary)', fontSize: '0.6875rem' },
@@ -229,7 +246,7 @@ function create(ctx) {
           <div style={{ ...S.muted, ...S.num }}>{snap.total} arrows · {clock(snap.seconds)} · {snap.lives}/{snap.maxLives} lives</div>
           {result?.points > 0 && (
             <div style={{ ...S.faint, ...S.num }}>
-              L{snap.level} ×{result.difficulty.toFixed(2)} · time ×{result.time.toFixed(2)} · lives ×{result.life.toFixed(1)}{result.streak > 1 ? ` · streak ${result.streak} ×${result.run.toFixed(1)}` : ''}
+              L{snap.level} ×{result.difficulty.toFixed(2)} · time ×{result.time.toFixed(2)} · lives ×{result.life.toFixed(1)}{result.streak > 1 ? ` · streak ${result.streak} ×${result.run.toFixed(1)}` : ''}{result.hints > 0 ? ` · ${result.hints} hint${result.hints === 1 ? '' : 's'} ×${result.hint.toFixed(2)}` : ''}
             </div>
           )}
           {task.busy
@@ -255,9 +272,38 @@ function create(ctx) {
     return null;
   }
 
-  function Page() {
+  // Volume, how see-through the modal is, and whether the composer offers a game.
+  function Settings({ modal }) {
+    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer);
+    return (
+      <Popover>
+        <PopoverTrigger asChild><Button size="sm" variant="ghost" aria-label="Settings">⚙</Button></PopoverTrigger>
+        <PopoverContent align="end" style={S.settings} onKeyDown={e => e.stopPropagation()}>
+          <label style={S.setting}>
+            <span>Volume</span>
+            <input type="range" min="0" max="100" step="5" value={Math.round(volume * 100)} aria-label="Volume" onChange={e => setVolume(e.target.value / 100)} style={S.range} />
+            <span style={{ ...S.num, ...S.muted, textAlign: 'right' }}>{Math.round(volume * 100)}%</span>
+          </label>
+          {modal && (
+            <label style={S.setting}>
+              <span>Transparency</span>
+              <input type="range" min="0" max={MAX_FADE * 100} step="5" value={Math.round(fade * 100)} aria-label="Transparency" onChange={e => setFade(e.target.value / 100)} style={S.range} />
+              <span style={{ ...S.num, ...S.muted, textAlign: 'right' }}>{Math.round(fade * 100)}%</span>
+            </label>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <span>Offer a game when I send a prompt</span>
+            <Switch checked={offer} onCheckedChange={setOffer} aria-label="Offer a game when I send a prompt" />
+          </label>
+        </PopoverContent>
+      </Popover>
+    );
+  }
+
+  function Page({ modal = false }) {
     const canvas = useRef(null), root = useRef(null);
     const snap = useValue($snap), task = useValue(tracker.$task), soundOn = useValue($sound), volume = useValue($volume);
+    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100);
     useEffect(() => {
       colors = palette(canvas.current);
       game.attach(canvas.current);
@@ -288,10 +334,13 @@ function create(ctx) {
           <span style={S.row}>
             {snap.zoomed && <Tip label="Zoom back out (F). Double-click the board to step through zoom levels."><Button size="sm" variant="ghost" onClick={() => game.fit()}>Fit</Button></Tip>}
             <Tip label={soundOn ? 'Sound on (M)' : 'Sound off (M)'}><Button size="sm" variant="ghost" aria-label={soundOn ? 'Mute sound' : 'Unmute sound'} aria-pressed={soundOn} onClick={toggleSound} style={{ opacity: soundOn ? 1 : 0.5 }}>{soundOn ? '♪' : '♪̸'}</Button></Tip>
-            <Tip label={`Volume ${Math.round(volume * 100)}% ([ and ])`}><input type="range" min="0" max="100" step="5" value={Math.round(volume * 100)} aria-label="Volume" onChange={e => setVolume(e.target.value / 100)} onKeyDown={e => e.stopPropagation()} style={{ ...S.volume, opacity: soundOn ? 1 : 0.5 }} /></Tip>
-            <Tip label="Show an arrow that can leave (H)"><Button size="sm" variant="outline" disabled={!playing} onClick={() => game.hint()}>Hint</Button></Tip>
+            <Tip label={hintCost ? `Show an arrow that can leave (H). Takes ${hintCost}% off this board's points, and the next one costs more.` : 'Show an arrow that can leave (H). Hints have already taken all they can from this board.'}>
+              <Button size="sm" variant="outline" disabled={!playing} aria-label="Hint" onClick={() => game.hint()}>Hint{hintCost > 0 && <span style={{ ...S.num, marginLeft: 5, color: 'var(--ui-yellow)' }}>−{hintCost}%</span>}</Button>
+            </Tip>
             <Tip label="Start this board over (R)"><Button size="sm" variant="ghost" disabled={!snap.total} onClick={() => restart()}>Restart</Button></Tip>
             {!task.busy && playing && <Tip label="Deal a different board (N)"><Button size="sm" variant="ghost" onClick={() => deal(freeLevel)}>New</Button></Tip>}
+            <Settings modal={modal} />
+            {modal && <Button size="sm" variant="ghost" aria-label="Close game" onClick={close}>✕</Button>}
           </span>
         </div>
         {!task.busy && playing && !snap.cleared && (
@@ -305,24 +354,56 @@ function create(ctx) {
     );
   }
 
-  // Status bar: an invitation that only exists while the agent has been busy for a moment.
-  function Chip() {
-    const task = useValue(tracker.$task);
-    const [here, setHere] = useState(onGame());
-    useEffect(() => { const fn = () => setHere(onGame()); window.addEventListener('hashchange', fn); return () => window.removeEventListener('hashchange', fn); }, []);
-    if (!task.busy || task.elapsed < 4 || here) return null;
+  // The game over the chat. Lives in the status bar's tree because that is always mounted.
+  function Modal() {
+    const isOpen = useValue($modal), fade = useValue($fade);
+    useEffect(() => { const fn = () => { if (onGame()) close(); }; window.addEventListener('hashchange', fn); return () => window.removeEventListener('hashchange', fn); }, []);
+    if (!isOpen) return null;
+    const solid = Math.round((1 - fade) * 100);
     return (
-      <Tip label={`Hermes Arrow: play a level-${task.level} board while this runs`}>
-        <button type="button" onClick={open}
-          className="inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: '100%', fontVariantNumeric: 'tabular-nums' }}>
-          <span aria-hidden="true">➤</span><span>Play · L{task.level}</span>
-        </button>
-      </Tip>
+      <Dialog open onOpenChange={next => { if (!next) close(); }}>
+        <DialogContent showCloseButton={false} blurBackdrop={fade === 0} overlayClassName={fade > 0 ? 'bg-transparent' : undefined}
+          aria-describedby={undefined} aria-label="Hermes Arrow" data-hermes-arrow-modal="" onOpenAutoFocus={e => e.preventDefault()}
+          style={{ width: MODAL_W, maxWidth: 'none', height: MODAL_H, maxHeight: 'none', background: `color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) ${solid}%, transparent)` }}>
+          <DialogTitle style={S.hidden}>Hermes Arrow</DialogTitle>
+          {/* The dialog body pads by 1rem; the game runs edge to edge. */}
+          <div style={{ margin: '-1rem', height: `calc(${MODAL_H} - 2px)`, minHeight: 0, borderRadius: 'inherit', overflow: 'hidden' }}><Page modal /></div>
+        </DialogContent>
+      </Dialog>
     );
   }
 
-  return { Page, Chip, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  // Status bar: an invitation that only exists while the agent has been busy for a moment.
+  function Chip() {
+    const task = useValue(tracker.$task), isOpen = useValue($modal);
+    const [here, setHere] = useState(onGame());
+    useEffect(() => { const fn = () => setHere(onGame()); window.addEventListener('hashchange', fn); return () => window.removeEventListener('hashchange', fn); }, []);
+    return (
+      <>
+        <Modal />
+        {task.busy && task.elapsed >= 4 && !here && !isOpen && (
+          <Tip label={`Hermes Arrow: play a level-${task.level} board while this runs`}>
+            <button type="button" onClick={open}
+              className="inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: '100%', fontVariantNumeric: 'tabular-nums' }}>
+              <span aria-hidden="true">➤</span><span>Play · L{task.level}</span>
+            </button>
+          </Tip>
+        )}
+      </>
+    );
+  }
+
+  // The offer beside the composer: a pill that exists only while that chat's turn is running.
+  const offers = ({ busy } = {}) => (busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: 'Play Arrow', icon: 'game', run: open }] : []);
+  // Older Desktops have no pill strip: the same offer as a quiet link under the composer.
+  function OfferLink() {
+    const task = useValue(tracker.$task), offer = useValue($offer), isOpen = useValue($modal);
+    if (!task.busy || !offer || isOpen || onGame()) return null;
+    return <Button size="sm" variant="ghost" onClick={open}>➤ Play Arrow</Button>;
+  }
+
+  return { Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 
 export default {
@@ -336,6 +417,9 @@ export default {
       { id: 'page', area: ROUTES_AREA, data: { path: ROUTE }, render: () => <app.Page /> },
       { id: 'nav', area: SIDEBAR_NAV_AREA, order: 90, data: { path: ROUTE, label: 'Arrow', codicon: 'arrow-right' } },
       { id: 'chip', area: STATUSBAR_AREAS.right, order: 85, render: () => <app.Chip /> },
+      COMPOSER_AREAS.microActions
+        ? { id: 'offer', area: COMPOSER_AREAS.microActions, data: { resolve: app.offers } }
+        : { id: 'offer', area: COMPOSER_AREAS.underside, render: () => <app.OfferLink /> },
       { id: 'open', area: PALETTE_AREA, data: { id: `${ID}.open`, label: 'Hermes Arrow: Play', keywords: ['game', 'arrow', 'puzzle', 'wait', 'play'], run: app.open } },
       // Read-only: the draft passes through untouched. Its wording seeds the difficulty estimate.
       { id: 'prompt', area: COMPOSER_AREAS.middleware, data: { handler: draft => { try { app.tracker.sawPrompt(draft); } catch { /* never block a send */ } return draft; } } }

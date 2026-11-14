@@ -62,7 +62,7 @@ const shot = (page, name) => page.screenshot({ path: join(out, name + '.png') })
 try {
   // --- Free play: deal, clear by real clicks, lose lives, retry -------------------------------
   let page = await open({ width: 1180, height: 760 });
-  await page.click('text=Arrow');
+  await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play');
   let s = await snap(page);
   assert.equal(s.level, 3, 'free play starts at level 3');
@@ -221,7 +221,7 @@ try {
 
   // --- Light theme, and a phone-sized viewport with touch --------------------------------------
   page = await open({ width: 1180, height: 760 }, 'light');
-  await page.click('text=Arrow');
+  await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play');
   await page.evaluate(() => window.arrow.deal(6));
   await page.waitForTimeout(1200);
@@ -229,7 +229,7 @@ try {
   await page.close();
 
   page = await open({ width: 390, height: 800 });
-  await page.click('text=Arrow');
+  await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play');
   await page.evaluate(() => window.arrow.deal(5));
   s = await snap(page);
@@ -249,10 +249,12 @@ try {
 
   // Volume: the slider and [ ] change it, it is remembered, and touching it un-mutes.
   page = await open({ width: 1180, height: 760 });
-  await page.click('text=Arrow');
+  await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play');
   const vol = () => page.evaluate(() => +document.querySelector('[aria-label="Volume"]').value);
-  assert.equal(await vol(), 70, 'volume starts at 70%');
+  await page.click('[aria-label="Settings"]');
+  assert.equal(await vol(), 70, 'volume starts at 70%, in the settings menu');
+  assert.equal(await page.locator('[aria-label="Transparency"]').count(), 0, 'transparency is a modal-only setting');
   await page.focus('[tabindex]');
   await page.keyboard.press(']'); await page.keyboard.press(']');
   assert.equal(await vol(), 90, '] turns it up');
@@ -262,15 +264,100 @@ try {
   assert.equal(await page.getAttribute('[aria-label="Mute sound"]', 'aria-pressed'), 'true', 'changing the volume un-mutes');
   await page.fill('[aria-label="Volume"]', '25');
   assert.equal(await vol(), 25, 'the slider sets it');
+  await page.click('[aria-label="Settings"]');
+  assert.equal(await page.locator('[aria-label="Volume"]').count(), 0, 'the menu closes');
+
+  // Hints cost points, more each time. Asking twice for the same arrow is one hint.
+  const hintLabel = () => page.textContent('[aria-label="Hint"]');
+  assert.equal(await hintLabel(), 'Hint−5%', 'the button shows what the next hint costs');
+  await page.keyboard.press('h'); await page.keyboard.press('h');
+  assert.equal((await snap(page)).hints, 1, 'the same hint asked twice counts once');
+  assert.equal(await hintLabel(), 'Hint−10%', 'the second hint costs more');
+
+  // A tap that lands on a blocked arrow, but right beside one that can leave, goes to the one that can.
+  await page.evaluate(() => window.arrow.deal(3));
+  const near = await page.evaluate(() => {
+    const g = window.arrow.game, { w, h } = g.board, L = g.layout(), r = g.canvas.getBoundingClientRect();
+    const free = id => g.isFree(g.arrows.find(a => a.id === id));
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const id = g.grid[y * w + x];
+      if (id < 0 || free(id)) continue;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy, other = nx >= 0 && ny >= 0 && nx < w && ny < h ? g.grid[ny * w + nx] : -1;
+        if (other >= 0 && other !== id && free(other)) return { x: r.left + L.ox + (x + 0.5 + dx * 0.38) * L.cell, y: r.top + L.oy + (y + 0.5 + dy * 0.38) * L.cell, cx: r.left + L.ox + (x + 0.5) * L.cell, cy: r.top + L.oy + (y + 0.5) * L.cell, free: other, blocked: id };
+      }
+    }
+    return null;
+  });
+  assert.ok(near, 'the board has a blocked arrow beside a free one');
+  assert.equal(await page.evaluate(n => window.arrow.game.arrowAt(n.x - window.arrow.game.canvas.getBoundingClientRect().left, n.y - window.arrow.game.canvas.getBoundingClientRect().top), near), near.blocked, 'the point is strictly on the blocked arrow');
+  await page.mouse.click(near.x, near.y);
+  await page.waitForTimeout(350);
+  s = await snap(page);
+  assert.deepEqual([s.cleared, s.lives, s.maxLives], [1, s.maxLives, s.maxLives], 'the near miss is forgiven: the free arrow leaves and no life is lost');
+  assert.ok(await page.evaluate(n => !window.arrow.game.arrows.some(a => a.id === n.free), near), 'and it was the neighbour that left');
+  await page.mouse.click(near.cx, near.cy);
+  await page.waitForTimeout(350);
+  const after2 = await snap(page);
+  assert.ok(after2.lives === s.lives - 1 || after2.cleared === 2, 'a tap on the middle of an arrow still means that arrow');
+  await page.evaluate(() => window.arrow.deal(3));
+
   const hop = await target(page, true);
   await page.mouse.click(hop.x, hop.y);
   assert.ok(Math.abs(await page.evaluate(() => window.arrow.sound.gain()) - 0.0625) < 1e-6, 'output gain follows the volume, squared');
   await shot(page, '13-volume');
   await page.close();
 
+  // --- The offer beside the composer, and the game as a modal over the chat ---------------------
+  page = await open({ width: 1180, height: 760 });
+  assert.equal(await page.locator('[data-pill]').count(), 0, 'no offer while the agent is idle');
+  await page.evaluate(() => window.agent.send('Refactor the billing module and write tests for all of it.'));
+  await page.waitForSelector('[data-pill]');
+  assert.equal(await page.textContent('[data-pill]'), 'Play Arrow', 'sending a prompt puts a pill by the composer');
+  assert.equal(await page.locator('[data-hermes-arrow-modal]').count(), 0, 'and nothing opens on its own');
+  await shot(page, '14-offer-pill');
+  await page.click('[data-pill]');
+  await page.waitForSelector('[data-hermes-arrow-modal] canvas');
+  await page.waitForFunction(() => window.arrow.game.status === 'play' && window.arrow.game.meta.mode === 'task');
+  assert.ok(await page.isVisible('text=Fake chat'), 'the chat stays on screen behind it');
+  assert.equal(await page.evaluate(() => window.location.hash.includes('hermes-arrow')), false, 'without leaving the chat');
+  await page.waitForTimeout(400);
+  await shot(page, '15-modal');
+  const mt = await target(page, true);
+  await page.mouse.click(mt.x, mt.y);
+  assert.equal((await snap(page)).cleared, 1, 'the board plays inside the modal');
+  await page.click('[aria-label="Settings"]');
+  const bg = () => page.evaluate(() => document.querySelector('[data-hermes-arrow-modal]').style.background);
+  assert.match(await bg(), /100%/, 'the modal starts solid');
+  await page.fill('[aria-label="Transparency"]', '60');
+  assert.match(await bg(), /40%/, 'transparency thins the modal background');
+  assert.equal(await page.locator('[aria-label="Volume"]').count(), 1, 'volume is in the same menu');
+  assert.equal(await page.locator('[aria-label="Mute sound"]').count(), 1, 'mute stays in the header');
+  await page.waitForTimeout(200);
+  await shot(page, '16-modal-settings-see-through');
+  await page.click('[role="switch"]');
+  await page.click('[aria-label="Close game"]');
+  assert.equal(await page.locator('[data-hermes-arrow-modal]').count(), 0, 'the close button closes it');
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator('[data-pill]').count(), 0, 'with the offer switched off the pill is gone');
+  await page.evaluate(() => window.arrow.open());
+  await page.waitForSelector('[data-hermes-arrow-modal] canvas');
+  assert.equal((await snap(page)).cleared, 1, 'reopening finds the same board in progress');
+  assert.match(await bg(), /40%/, 'and remembers the transparency');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('[data-hermes-arrow-modal]').count(), 0, 'Escape closes it');
+  await page.close();
+
+  // An older Desktop without the pill strip gets the offer under the composer instead.
+  page = await open({ width: 1180, height: 760 }, undefined, '?old=1');
+  await page.evaluate(() => window.agent.send('Refactor the billing module.'));
+  await page.click('[data-underside] >> text=Play Arrow');
+  await page.waitForSelector('[data-hermes-arrow-modal] canvas');
+  await page.close();
+
   // The plugin must survive being loaded while the agent is already working.
   page = await open({ width: 1180, height: 760 }, undefined, '?busy=1');
-  await page.click('text=Arrow');
+  await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play', null, { timeout: 5000 });
   assert.equal((await snap(page)).mode, 'task', 'loading mid-task deals a task board');
   await page.close();

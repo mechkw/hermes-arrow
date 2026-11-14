@@ -22,15 +22,19 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 
 ## Where it shows up
 
-- **Sidebar → Arrow**, and **⌘K → Hermes Arrow: Play**.
-- A **Play · L4** chip in the status bar once the agent has been busy for a few seconds.
+- A **Play Arrow** pill above the composer while that chat's turn is running (`composer.microActions`; on a Desktop without the pill strip, a link in `composer.underside`). Nothing opens until you click it.
+- The pill, the **Play · L4** status-bar chip (after a few busy seconds) and **⌘K → Hermes Arrow: Play** open the game as a modal over the chat, so the agent stays in view. Closing it keeps the board.
+- **Sidebar → Arrow** is the full-page version.
+- ⚙ in the game's header: volume, modal transparency (0–80%), and a switch for the composer offer.
 
 ## Controls
 
 - **Tap** an arrow to send it off. **Hold** one to preview its path: green to the edge if it is clear, red up to whatever blocks it. A preview costs nothing.
 - **Double-click** the board to step through three zoom levels (fit, 1.75×, 3×). **Drag** to move a zoomed board. Scroll and pinch also zoom.
 - Keys: `H` hint, `R` restart, `F` fit, `M` mute, `[` / `]` volume, `N` new board (free play).
-- Volume slider beside the ♪ button; the level is remembered, and moving it un-mutes.
+- Mute (♪) stays in the header; the volume slider is under ⚙. The level is remembered, and moving it un-mutes.
+- Hints cost points and each costs more than the last: 5%, 10%, 15%… of the board's points (5, 15, 30, 50, 75% in total), never below 20% of the board. The Hint button shows the next price.
+- A tap that lands on a blocked arrow within a quarter-cell or so of one that can leave goes to the one that can leave.
 
 ## Lives, time and points
 

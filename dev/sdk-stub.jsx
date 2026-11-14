@@ -1,5 +1,5 @@
 // A stand-in for @hermes/plugin-sdk, just enough to run the plugin in a plain browser tab.
-import { useSyncExternalStore } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 
 export function atom(initial) {
   let value = initial; const subs = new Set();
@@ -14,7 +14,9 @@ export const useValue = a => useSyncExternalStore(cb => a.listen(cb), a.get);
 
 export const ROUTES_AREA = 'routes', SIDEBAR_NAV_AREA = 'sidebar.nav', PALETTE_AREA = 'palette';
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' };
-export const COMPOSER_AREAS = { middleware: 'composer.middleware' };
+// `?old` plays an older Desktop that has no micro-action pill strip.
+export const COMPOSER_AREAS = { middleware: 'composer.middleware', underside: 'composer.underside',
+  ...(window.location.search.includes('old') ? {} : { microActions: 'composer.microActions' }) };
 
 export const events = new Map();
 export const emit = (type, event) => { for (const fn of events.get(type) || []) fn(event); };
@@ -36,3 +38,31 @@ export function Button({ variant = 'default', size, style, children, ...rest }) 
     color: 'inherit', cursor: 'pointer', opacity: rest.disabled ? 0.45 : 1, ...look[variant], ...style }}>{children}</button>;
 }
 export const Tip = ({ label, children }) => <span title={label} style={{ display: 'inline-flex' }}>{children}</span>;
+
+// Dialog, Popover and Switch: the same props the plugin passes to the real (Radix) ones.
+export function Dialog({ open, onOpenChange, children }) {
+  useEffect(() => {
+    if (!open) return;
+    const fn = e => { if (e.key === 'Escape') onOpenChange?.(false); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [open, onOpenChange]);
+  if (!open) return null;
+  return <div data-stub-overlay="" onPointerDown={e => { if (e.target === e.currentTarget) onOpenChange?.(false); }}
+    style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'grid', placeItems: 'center', background: 'rgb(0 0 0 / 0.22)' }}>{children}</div>;
+}
+export function DialogContent({ children, style, showCloseButton, blurBackdrop, overlayClassName, onOpenAutoFocus, ...rest }) {
+  return <div role="dialog" {...rest} style={{ position: 'relative', display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid var(--ui-stroke-secondary)', ...style }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, padding: '1rem', minHeight: 0, borderRadius: 'inherit' }}>{children}</div>
+  </div>;
+}
+export const DialogTitle = ({ children, style }) => <h2 style={style}>{children}</h2>;
+
+const PopoverState = createContext(null);
+export function Popover({ children }) { const state = useState(false); return <PopoverState.Provider value={state}><span style={{ position: 'relative', display: 'inline-flex' }}>{children}</span></PopoverState.Provider>; }
+export function PopoverTrigger({ children }) { const [open, setOpen] = useContext(PopoverState); return cloneElement(children, { onClick: () => setOpen(!open), 'aria-expanded': open }); }
+export function PopoverContent({ children, style, align, ...rest }) {
+  const [open] = useContext(PopoverState);
+  return open ? <div role="dialog" {...rest} style={{ position: 'absolute', top: '100%', right: 0, zIndex: 60, borderRadius: 5, background: 'var(--ui-bg-elevated)', border: '1px solid var(--ui-stroke-secondary)', ...style }}>{children}</div> : null;
+}
+export const Switch = ({ checked, onCheckedChange, ...rest }) => <input type="checkbox" role="switch" checked={!!checked} onChange={e => onCheckedChange?.(e.target.checked)} {...rest} />;

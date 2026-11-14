@@ -1,6 +1,6 @@
 // Browser harness: mounts the built plugin against the stub SDK and gives buttons to fake agent turns.
 import { createRoot } from 'react-dom/client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
 import { host, events, emit, useValue, atom } from '@hermes/plugin-sdk';
 
@@ -32,6 +32,11 @@ window.agent = {
 function Shell() {
   const hash = useValue($hash), [text, setText] = useState('Audit the entire repo, refactor auth and write tests for every endpoint. Be thorough.');
   const page = find('routes')[0], chip = find('statusBar.right')[0], nav = find('sidebar.nav')[0];
+  const busy = !!useValue(host.state.busyBySession).s1;
+  // The app re-resolves pills on every composer render; a tick stands in for that here.
+  const [, tick] = useState(0);
+  useEffect(() => { const id = setInterval(() => tick(n => n + 1), 200); return () => clearInterval(id); }, []);
+  const pills = find('composer.microActions').flatMap(c => c.data.resolve({ busy, sessionId: 's1', todos: [] }));
   const game = hash.replace(/^#/, '') === page.data.path;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -39,7 +44,11 @@ function Shell() {
         {game ? page.render() : (
           <div style={{ padding: 24, display: 'grid', gap: 10, maxWidth: 560 }}>
             <b>Fake chat</b>
+            <span data-pills="" style={{ display: 'flex', gap: 6, minHeight: 24 }}>
+              {pills.map(p => <button key={p.id} data-pill={p.id} onClick={() => p.run('s1')} style={{ borderRadius: 12, padding: '2px 10px', fontSize: 12 }}>{p.label}</button>)}
+            </span>
             <textarea rows={3} value={text} onChange={e => setText(e.target.value)} />
+            <span data-underside="">{find('composer.underside').map(c => <span key={c.id}>{c.render()}</span>)}</span>
             <span style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => window.agent.send(text)}>Send (agent starts working)</button>
               <a href={'#' + nav.data.path}>{nav.data.label}</a>

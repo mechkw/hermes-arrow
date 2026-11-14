@@ -81,7 +81,7 @@ test('generation is fast enough to run on the UI thread', () => {
   assert.ok(ms < 1500, `largest board built in ${ms.toFixed(0)} ms`);
 });
 
-import { livesFor, liveStreak, score, settle, STREAK_IDLE_MS } from '../src/score.js';
+import { livesFor, liveStreak, score, settle, STREAK_IDLE_MS, hintFactor, nextHintCost } from '../src/score.js';
 
 test('lives run from 2 to 5 with difficulty', () => {
   assert.deepEqual(LEVELS.map(l => livesFor(l.n)), [2, 2, 3, 3, 4, 4, 5]);
@@ -115,4 +115,17 @@ test('streak grows on wins, ends on a loss or 36 idle hours', () => {
   assert.equal(liveStreak(third.stats, third.stats.lastPlay + STREAK_IDLE_MS - 1), 3, 'still alive just inside 36 h');
   assert.equal(liveStreak(third.stats, third.stats.lastPlay + STREAK_IDLE_MS + 1), 0, 'gone after 36 h');
   assert.equal(settle(third.stats, win, third.stats.lastPlay + STREAK_IDLE_MS + 1).stats.streak, 1, 'a win after the gap starts over at 1');
+});
+
+test('hints cost points, and each one costs more than the last', () => {
+  const base = { level: 3, arrows: 30, seconds: 60, lives: 2, streak: 1 };
+  const p = hints => score({ ...base, hints }).points;
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(n => +hintFactor(n).toFixed(2)), [1, 0.95, 0.85, 0.7, 0.5, 0.25]);
+  assert.deepEqual([0, 1, 2, 3].map(nextHintCost), [0.05, 0.1, 0.15, 0.2], 'the price goes up every time');
+  assert.ok(p(0) > p(1) && p(1) > p(2) && p(2) > p(3));
+  assert.ok(p(1) - p(2) > p(0) - p(1), 'the second hint takes more than the first');
+  assert.equal(p(6), p(60), 'a board never pays less than the floor');
+  assert.equal(hintFactor(60), 0.2);
+  assert.equal(nextHintCost(60), 0);
+  assert.equal(settle({}, { won: true, ...base, hints: 2 }).result.hint, 0.85, 'the win records what hints cost');
 });

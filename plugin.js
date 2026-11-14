@@ -1,4 +1,4 @@
-// Hermes Arrow 0.3.1 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.4.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -6,12 +6,19 @@ import {
   atom,
   Button,
   COMPOSER_AREAS,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   haptic,
   host,
   PALETTE_AREA,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
+  Switch,
   Tip,
   useValue
 } from "@hermes/plugin-sdk";
@@ -221,6 +228,7 @@ var Game = class {
     this.cleared = 0;
     this.mistakes = 0;
     this.moves = 0;
+    this.hints = 0;
     this.lives = this.maxLives;
     this.status = "play";
     this.startedAt = 0;
@@ -255,6 +263,7 @@ var Game = class {
       maxLives: this.maxLives,
       started: !!this.startedAt,
       mistakes: this.mistakes,
+      hints: this.hints || 0,
       seconds: this.seconds,
       level: this.meta?.level || 0,
       mode: this.meta?.mode || "free",
@@ -323,6 +332,7 @@ var Game = class {
     const { w, h } = this.board;
     const free = this.arrows.find((a) => probe(w, h, this.grid, a.cells).blocker === -1);
     if (!free) return;
+    if (this.hintId !== free.id) this.hints++;
     this.hintId = free.id;
     this.reveal(free);
     this.onEvent("hint");
@@ -441,12 +451,37 @@ var Game = class {
     const px = dx > 0 ? this.viewW - sx : dx < 0 ? sx : dy > 0 ? this.viewH - sy : sy;
     return px / cell + cells.length + 1;
   }
-  arrowAt(sx, sy) {
-    if (!this.board) return -1;
+  /**
+   * The arrow under a point. With `assist` (taps only), a point that lands on or nearest a blocked
+   * arrow but within a small margin of one that can leave is given to the one that can leave:
+   * nobody means to tap the blocked one.
+   */
+  arrowAt(sx, sy, assist = false) {
+    const id = this.nearest(sx, sy);
+    if (!assist || id.best < 0 || this.isFree(this.arrows.find((a) => a.id === id.best))) return id.best;
+    const { fx, fy, cx, cy, at, cell } = id, margin = clamp(10 / cell, 0.2, 0.5);
+    let alt = -1, altD = Infinity;
+    for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 2; x <= cx + 2; x++) {
+      const other = at(x, y);
+      if (other < 0 || other === id.best) continue;
+      const edge = Math.hypot(Math.max(x - fx, 0, fx - x - 1), Math.max(y - fy, 0, fy - y - 1));
+      const centre = Math.hypot(x + 0.5 - fx, y + 0.5 - fy);
+      const ok = id.direct ? edge <= margin : centre <= Math.min(id.reach, id.bestD + margin);
+      const d = id.direct ? edge : centre;
+      if (ok && d < altD && this.isFree(this.arrows.find((a) => a.id === other))) {
+        altD = d;
+        alt = other;
+      }
+    }
+    return alt >= 0 ? alt : id.best;
+  }
+  nearest(sx, sy) {
+    if (!this.board) return { best: -1 };
     const { cell, ox, oy } = this.layout(), { w, h } = this.board;
     const fx = (sx - ox) / cell, fy = (sy - oy) / cell, cx = Math.floor(fx), cy = Math.floor(fy);
     const at = (x, y) => x >= 0 && y >= 0 && x < w && y < h ? this.grid[y * w + x] : -1;
-    if (at(cx, cy) >= 0) return at(cx, cy);
+    const found = { fx, fy, cx, cy, at, cell };
+    if (at(cx, cy) >= 0) return { ...found, best: at(cx, cy), bestD: 0, direct: true };
     const reach = clamp(22 / cell, 0.6, 1.6);
     let best = -1, bestD = reach;
     for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 2; x <= cx + 2; x++) {
@@ -458,7 +493,7 @@ var Game = class {
         best = id;
       }
     }
-    return best;
+    return { ...found, best, bestD, reach, direct: false };
   }
   local(e) {
     const r = this.canvas.getBoundingClientRect();
@@ -525,7 +560,7 @@ var Game = class {
       return;
     }
     if (p.moved || cancelled) return;
-    const t = now(), last = this.lastTap, under = this.status === "play" ? this.arrowAt(p.x, p.y) : -1;
+    const t = now(), last = this.lastTap, under = this.status === "play" ? this.arrowAt(p.x, p.y, true) : -1;
     if (last && !last.removed && last.id === under && t - last.t < DOUBLE_MS && Math.hypot(p.x - last.x, p.y - last.y) < 24) {
       this.dropMiss();
       this.lastTap = null;
@@ -694,13 +729,18 @@ var clamp2 = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 var livesFor = (n) => clamp2(2 + Math.floor((n - 1) / 2), 2, 5);
 var STREAK_IDLE_MS = 36 * 60 * 60 * 1e3;
 var liveStreak = (stats, now2 = Date.now()) => stats?.lastPlay && now2 - stats.lastPlay > STREAK_IDLE_MS ? 0 : Math.max(0, stats?.streak || 0);
-function score({ level: level2 = 1, arrows = 0, seconds = 0, lives = 0, streak = 1 }) {
+var HINT_STEP = 0.05;
+var HINT_FLOOR = 0.2;
+var hintFactor = (n) => Math.max(HINT_FLOOR, 1 - HINT_STEP * (n * (n + 1)) / 2);
+var nextHintCost = (n) => Math.round((hintFactor(n) - hintFactor(n + 1)) * 100) / 100;
+function score({ level: level2 = 1, arrows = 0, seconds = 0, lives = 0, streak = 1, hints = 0 }) {
   const base = arrows * 10;
   const difficulty = 1 + (level2 - 1) * 0.25;
   const time = clamp2(arrows * 2 / Math.max(1, seconds), 0.5, 2);
   const life = 1 + 0.1 * Math.max(0, lives);
   const run = 1 + 0.1 * clamp2(streak - 1, 0, 10);
-  return { points: Math.round(base * difficulty * time * life * run), base, difficulty, time, life, run };
+  const hint = hintFactor(Math.max(0, hints));
+  return { points: Math.round(base * difficulty * time * life * run * hint), base, difficulty, time, life, run, hint, hints };
 }
 function settle(stats, outcome, now2 = Date.now()) {
   const next = { boards: 0, arrows: 0, points: 0, best: 0, bestStreak: 0, ...stats, streak: liveStreak(stats, now2), lastPlay: now2 };
@@ -1014,7 +1054,10 @@ function createTracker({ atom: atom2, busyBySession, onEvent, storage, setInterv
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.3.1";
+var VERSION = "0.4.0";
+var MAX_FADE = 0.8;
+var MODAL_W = "min(94vw, 1100px)";
+var MODAL_H = "min(86vh, 860px)";
 var fmt = (n) => Math.round(n).toLocaleString("en-US");
 var clock = (seconds) => {
   const s = Math.max(0, Math.floor(seconds)), m = Math.floor(s / 60);
@@ -1041,7 +1084,7 @@ function palette(el) {
   };
 }
 function create(ctx) {
-  const $snap = atom({ status: "empty" }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({});
+  const $snap = atom({ status: "empty" }), $auto = atom(0), $result = atom(null), $sound = atom(true), $volume = atom(0.7), $stats = atom({}), $modal = atom(false), $fade = atom(0), $offer = atom(true);
   const stored = (key, fallback) => {
     try {
       const v = ctx.storage.get(key, fallback);
@@ -1062,6 +1105,8 @@ function create(ctx) {
   $stats.set(stats);
   $sound.set(stored("sound", true) !== false);
   $volume.set(Math.max(0, Math.min(1, Number(stored("volume", 0.7)) || 0)));
+  $fade.set(Math.max(0, Math.min(MAX_FADE, Number(stored("fade", 0)) || 0)));
+  $offer.set(stored("offer", true) !== false);
   const sound = createSound(() => $sound.get(), () => $volume.get());
   const saveStats = (next) => {
     stats = next;
@@ -1070,7 +1115,7 @@ function create(ctx) {
   };
   const finish = (won) => {
     const s = game.snapshot();
-    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives });
+    const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints });
     saveStats(next);
     $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
   };
@@ -1148,7 +1193,7 @@ function create(ctx) {
   const stopDone = tracker.$done.subscribe((done) => {
     if (!done || done.at === doneAt) return;
     doneAt = done.at;
-    if (done.duration >= 2 && onGame()) sound.play("agentDone");
+    if (done.duration >= 2 && (onGame() || $modal.get())) sound.play("agentDone");
   });
   const restart = () => {
     game.reset();
@@ -1160,10 +1205,17 @@ function create(ctx) {
     deal(freeLevel);
   };
   const open = () => {
-    if (!onGame()) {
-      returnTo = hashPath();
-      host.navigate(ROUTE);
-    }
+    if (!onGame()) $modal.set(true);
+  };
+  const close = () => $modal.set(false);
+  const setFade = (v) => {
+    const next = Math.max(0, Math.min(MAX_FADE, Math.round(v * 20) / 20));
+    $fade.set(next);
+    store("fade", next);
+  };
+  const setOffer = (on) => {
+    $offer.set(!!on);
+    store("offer", !!on);
   };
   const toggleSound = () => {
     const on = !$sound.get();
@@ -1187,12 +1239,16 @@ function create(ctx) {
   };
   const back = () => {
     tracker.dismiss();
+    if ($modal.get()) return close();
     host.navigate(returnTo && returnTo.split("?")[0] !== ROUTE ? returnTo : "/");
   };
   const S = {
     page: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, outline: "none", userSelect: "none", WebkitUserSelect: "none", color: "var(--ui-text-primary)" },
     bar: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px 12px", padding: "8px 12px", borderBottom: "1px solid var(--ui-stroke-tertiary)", fontSize: "0.8125rem", lineHeight: 1.2 },
-    volume: { width: 64, height: 16, margin: 0, accentColor: "var(--ui-accent)", cursor: "pointer" },
+    range: { width: "100%", height: 16, margin: 0, accentColor: "var(--ui-accent)", cursor: "pointer" },
+    settings: { width: 280, padding: 12, display: "grid", gap: 12, fontSize: "0.8125rem", color: "var(--ui-text-primary)" },
+    setting: { display: "grid", gridTemplateColumns: "92px 1fr 36px", alignItems: "center", gap: 8 },
+    hidden: { position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" },
     grow: { flex: "1 1 0", minWidth: 0 },
     muted: { color: "var(--ui-text-tertiary)" },
     faint: { color: "var(--ui-text-quaternary)", fontSize: "0.6875rem" },
@@ -1351,7 +1407,8 @@ function create(ctx) {
           result.time.toFixed(2),
           " \xB7 lives \xD7",
           result.life.toFixed(1),
-          result.streak > 1 ? ` \xB7 streak ${result.streak} \xD7${result.run.toFixed(1)}` : ""
+          result.streak > 1 ? ` \xB7 streak ${result.streak} \xD7${result.run.toFixed(1)}` : "",
+          result.hints > 0 ? ` \xB7 ${result.hints} hint${result.hints === 1 ? "" : "s"} \xD7${result.hint.toFixed(2)}` : ""
         ] }),
         task.busy ? /* @__PURE__ */ jsxs(Button, { onClick: () => deal(), children: [
           "Next board \xB7 L",
@@ -1391,9 +1448,38 @@ function create(ctx) {
     }
     return null;
   }
-  function Page() {
+  function Settings({ modal }) {
+    const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer);
+    return /* @__PURE__ */ jsxs(Popover, { children: [
+      /* @__PURE__ */ jsx(PopoverTrigger, { asChild: true, children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": "Settings", children: "\u2699" }) }),
+      /* @__PURE__ */ jsxs(PopoverContent, { align: "end", style: S.settings, onKeyDown: (e) => e.stopPropagation(), children: [
+        /* @__PURE__ */ jsxs("label", { style: S.setting, children: [
+          /* @__PURE__ */ jsx("span", { children: "Volume" }),
+          /* @__PURE__ */ jsx("input", { type: "range", min: "0", max: "100", step: "5", value: Math.round(volume * 100), "aria-label": "Volume", onChange: (e) => setVolume(e.target.value / 100), style: S.range }),
+          /* @__PURE__ */ jsxs("span", { style: { ...S.num, ...S.muted, textAlign: "right" }, children: [
+            Math.round(volume * 100),
+            "%"
+          ] })
+        ] }),
+        modal && /* @__PURE__ */ jsxs("label", { style: S.setting, children: [
+          /* @__PURE__ */ jsx("span", { children: "Transparency" }),
+          /* @__PURE__ */ jsx("input", { type: "range", min: "0", max: MAX_FADE * 100, step: "5", value: Math.round(fade * 100), "aria-label": "Transparency", onChange: (e) => setFade(e.target.value / 100), style: S.range }),
+          /* @__PURE__ */ jsxs("span", { style: { ...S.num, ...S.muted, textAlign: "right" }, children: [
+            Math.round(fade * 100),
+            "%"
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs("label", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }, children: [
+          /* @__PURE__ */ jsx("span", { children: "Offer a game when I send a prompt" }),
+          /* @__PURE__ */ jsx(Switch, { checked: offer, onCheckedChange: setOffer, "aria-label": "Offer a game when I send a prompt" })
+        ] })
+      ] })
+    ] });
+  }
+  function Page({ modal = false }) {
     const canvas = useRef(null), root = useRef(null);
     const snap = useValue($snap), task = useValue(tracker.$task), soundOn = useValue($sound), volume = useValue($volume);
+    const hintCost = Math.round(nextHintCost(snap.hints || 0) * 100);
     useEffect(() => {
       colors = palette(canvas.current);
       game.attach(canvas.current);
@@ -1438,10 +1524,18 @@ function create(ctx) {
         /* @__PURE__ */ jsxs("span", { style: S.row, children: [
           snap.zoomed && /* @__PURE__ */ jsx(Tip, { label: "Zoom back out (F). Double-click the board to step through zoom levels.", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: () => game.fit(), children: "Fit" }) }),
           /* @__PURE__ */ jsx(Tip, { label: soundOn ? "Sound on (M)" : "Sound off (M)", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": soundOn ? "Mute sound" : "Unmute sound", "aria-pressed": soundOn, onClick: toggleSound, style: { opacity: soundOn ? 1 : 0.5 }, children: soundOn ? "\u266A" : "\u266A\u0338" }) }),
-          /* @__PURE__ */ jsx(Tip, { label: `Volume ${Math.round(volume * 100)}% ([ and ])`, children: /* @__PURE__ */ jsx("input", { type: "range", min: "0", max: "100", step: "5", value: Math.round(volume * 100), "aria-label": "Volume", onChange: (e) => setVolume(e.target.value / 100), onKeyDown: (e) => e.stopPropagation(), style: { ...S.volume, opacity: soundOn ? 1 : 0.5 } }) }),
-          /* @__PURE__ */ jsx(Tip, { label: "Show an arrow that can leave (H)", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "outline", disabled: !playing, onClick: () => game.hint(), children: "Hint" }) }),
+          /* @__PURE__ */ jsx(Tip, { label: hintCost ? `Show an arrow that can leave (H). Takes ${hintCost}% off this board's points, and the next one costs more.` : "Show an arrow that can leave (H). Hints have already taken all they can from this board.", children: /* @__PURE__ */ jsxs(Button, { size: "sm", variant: "outline", disabled: !playing, "aria-label": "Hint", onClick: () => game.hint(), children: [
+            "Hint",
+            hintCost > 0 && /* @__PURE__ */ jsxs("span", { style: { ...S.num, marginLeft: 5, color: "var(--ui-yellow)" }, children: [
+              "\u2212",
+              hintCost,
+              "%"
+            ] })
+          ] }) }),
           /* @__PURE__ */ jsx(Tip, { label: "Start this board over (R)", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", disabled: !snap.total, onClick: () => restart(), children: "Restart" }) }),
-          !task.busy && playing && /* @__PURE__ */ jsx(Tip, { label: "Deal a different board (N)", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: () => deal(freeLevel), children: "New" }) })
+          !task.busy && playing && /* @__PURE__ */ jsx(Tip, { label: "Deal a different board (N)", children: /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: () => deal(freeLevel), children: "New" }) }),
+          /* @__PURE__ */ jsx(Settings, { modal }),
+          modal && /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", "aria-label": "Close game", onClick: close, children: "\u2715" })
         ] })
       ] }),
       !task.busy && playing && !snap.cleared && /* @__PURE__ */ jsx("div", { style: { ...S.bar, borderBottom: "none", justifyContent: "center", paddingBottom: 0 }, children: /* @__PURE__ */ jsx(LevelPicker, { value: freeLevel }) }),
@@ -1451,33 +1545,72 @@ function create(ctx) {
       ] })
     ] });
   }
+  function Modal() {
+    const isOpen = useValue($modal), fade = useValue($fade);
+    useEffect(() => {
+      const fn = () => {
+        if (onGame()) close();
+      };
+      window.addEventListener("hashchange", fn);
+      return () => window.removeEventListener("hashchange", fn);
+    }, []);
+    if (!isOpen) return null;
+    const solid = Math.round((1 - fade) * 100);
+    return /* @__PURE__ */ jsx(Dialog, { open: true, onOpenChange: (next) => {
+      if (!next) close();
+    }, children: /* @__PURE__ */ jsxs(
+      DialogContent,
+      {
+        showCloseButton: false,
+        blurBackdrop: fade === 0,
+        overlayClassName: fade > 0 ? "bg-transparent" : void 0,
+        "aria-describedby": void 0,
+        "aria-label": "Hermes Arrow",
+        "data-hermes-arrow-modal": "",
+        onOpenAutoFocus: (e) => e.preventDefault(),
+        style: { width: MODAL_W, maxWidth: "none", height: MODAL_H, maxHeight: "none", background: `color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) ${solid}%, transparent)` },
+        children: [
+          /* @__PURE__ */ jsx(DialogTitle, { style: S.hidden, children: "Hermes Arrow" }),
+          /* @__PURE__ */ jsx("div", { style: { margin: "-1rem", height: `calc(${MODAL_H} - 2px)`, minHeight: 0, borderRadius: "inherit", overflow: "hidden" }, children: /* @__PURE__ */ jsx(Page, { modal: true }) })
+        ]
+      }
+    ) });
+  }
   function Chip() {
-    const task = useValue(tracker.$task);
+    const task = useValue(tracker.$task), isOpen = useValue($modal);
     const [here, setHere] = useState(onGame());
     useEffect(() => {
       const fn = () => setHere(onGame());
       window.addEventListener("hashchange", fn);
       return () => window.removeEventListener("hashchange", fn);
     }, []);
-    if (!task.busy || task.elapsed < 4 || here) return null;
-    return /* @__PURE__ */ jsx(Tip, { label: `Hermes Arrow: play a level-${task.level} board while this runs`, children: /* @__PURE__ */ jsxs(
-      "button",
-      {
-        type: "button",
-        onClick: open,
-        className: "inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground",
-        style: { display: "inline-flex", alignItems: "center", gap: 4, height: "100%", fontVariantNumeric: "tabular-nums" },
-        children: [
-          /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: "\u27A4" }),
-          /* @__PURE__ */ jsxs("span", { children: [
-            "Play \xB7 L",
-            task.level
-          ] })
-        ]
-      }
-    ) });
+    return /* @__PURE__ */ jsxs(Fragment, { children: [
+      /* @__PURE__ */ jsx(Modal, {}),
+      task.busy && task.elapsed >= 4 && !here && !isOpen && /* @__PURE__ */ jsx(Tip, { label: `Hermes Arrow: play a level-${task.level} board while this runs`, children: /* @__PURE__ */ jsxs(
+        "button",
+        {
+          type: "button",
+          onClick: open,
+          className: "inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground",
+          style: { display: "inline-flex", alignItems: "center", gap: 4, height: "100%", fontVariantNumeric: "tabular-nums" },
+          children: [
+            /* @__PURE__ */ jsx("span", { "aria-hidden": "true", children: "\u27A4" }),
+            /* @__PURE__ */ jsxs("span", { children: [
+              "Play \xB7 L",
+              task.level
+            ] })
+          ]
+        }
+      ) })
+    ] });
   }
-  return { Page, Chip, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  const offers = ({ busy } = {}) => busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: "Play Arrow", icon: "game", run: open }] : [];
+  function OfferLink() {
+    const task = useValue(tracker.$task), offer = useValue($offer), isOpen = useValue($modal);
+    if (!task.busy || !offer || isOpen || onGame()) return null;
+    return /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: open, children: "\u27A4 Play Arrow" });
+  }
+  return { Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 var plugin_default = {
   id: ID,
@@ -1495,6 +1628,7 @@ var plugin_default = {
       { id: "page", area: ROUTES_AREA, data: { path: ROUTE }, render: () => /* @__PURE__ */ jsx(app.Page, {}) },
       { id: "nav", area: SIDEBAR_NAV_AREA, order: 90, data: { path: ROUTE, label: "Arrow", codicon: "arrow-right" } },
       { id: "chip", area: STATUSBAR_AREAS.right, order: 85, render: () => /* @__PURE__ */ jsx(app.Chip, {}) },
+      COMPOSER_AREAS.microActions ? { id: "offer", area: COMPOSER_AREAS.microActions, data: { resolve: app.offers } } : { id: "offer", area: COMPOSER_AREAS.underside, render: () => /* @__PURE__ */ jsx(app.OfferLink, {}) },
       { id: "open", area: PALETTE_AREA, data: { id: `${ID}.open`, label: "Hermes Arrow: Play", keywords: ["game", "arrow", "puzzle", "wait", "play"], run: app.open } },
       // Read-only: the draft passes through untouched. Its wording seeds the difficulty estimate.
       { id: "prompt", area: COMPOSER_AREAS.middleware, data: { handler: (draft) => {

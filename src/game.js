@@ -38,7 +38,7 @@ export class Game {
     const { w, h } = this.board;
     this.arrows = this.board.arrows.map(a => ({ id: a.id, cells: a.cells }));
     this.grid = makeGrid(w, h, this.arrows);
-    this.total = this.arrows.length; this.cleared = 0; this.mistakes = 0; this.moves = 0;
+    this.total = this.arrows.length; this.cleared = 0; this.mistakes = 0; this.moves = 0; this.hints = 0;
     this.lives = this.maxLives; this.status = 'play'; this.startedAt = 0; this.endedAt = 0;
     this.flying = []; this.hintId = -1; this.bumpUntil.clear();
     this.preview = null; this.lastTap = null; this.dropMiss();
@@ -52,7 +52,7 @@ export class Game {
 
   snapshot() {
     return { status: this.status, left: this.left, total: this.total, cleared: this.cleared, lives: this.lives, maxLives: this.maxLives, started: !!this.startedAt,
-      mistakes: this.mistakes, seconds: this.seconds, level: this.meta?.level || 0, mode: this.meta?.mode || 'free',
+      mistakes: this.mistakes, hints: this.hints || 0, seconds: this.seconds, level: this.meta?.level || 0, mode: this.meta?.mode || 'free',
       zoomed: this.zoom > 1.01, w: this.board?.w || 0, h: this.board?.h || 0 };
   }
 
@@ -94,6 +94,8 @@ export class Game {
     const { w, h } = this.board;
     const free = this.arrows.find(a => probe(w, h, this.grid, a.cells).blocker === -1);
     if (!free) return;
+    // Asking again while the same arrow is still marked is not a second hint.
+    if (this.hintId !== free.id) this.hints++;
     this.hintId = free.id;
     this.reveal(free);
     this.onEvent('hint');
@@ -198,12 +200,36 @@ export class Game {
     return px / cell + cells.length + 1;
   }
 
-  arrowAt(sx, sy) {
-    if (!this.board) return -1;
+  /**
+   * The arrow under a point. With `assist` (taps only), a point that lands on or nearest a blocked
+   * arrow but within a small margin of one that can leave is given to the one that can leave:
+   * nobody means to tap the blocked one.
+   */
+  arrowAt(sx, sy, assist = false) {
+    const id = this.nearest(sx, sy);
+    if (!assist || id.best < 0 || this.isFree(this.arrows.find(a => a.id === id.best))) return id.best;
+    const { fx, fy, cx, cy, at, cell } = id, margin = clamp(10 / cell, 0.2, 0.5);
+    let alt = -1, altD = Infinity;
+    for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 2; x <= cx + 2; x++) {
+      const other = at(x, y);
+      if (other < 0 || other === id.best) continue;
+      // Distance to the cell's square (0 inside it), and to its centre for taps that hit no cell.
+      const edge = Math.hypot(Math.max(x - fx, 0, fx - x - 1), Math.max(y - fy, 0, fy - y - 1));
+      const centre = Math.hypot(x + 0.5 - fx, y + 0.5 - fy);
+      const ok = id.direct ? edge <= margin : centre <= Math.min(id.reach, id.bestD + margin);
+      const d = id.direct ? edge : centre;
+      if (ok && d < altD && this.isFree(this.arrows.find(a => a.id === other))) { altD = d; alt = other; }
+    }
+    return alt >= 0 ? alt : id.best;
+  }
+
+  nearest(sx, sy) {
+    if (!this.board) return { best: -1 };
     const { cell, ox, oy } = this.layout(), { w, h } = this.board;
     const fx = (sx - ox) / cell, fy = (sy - oy) / cell, cx = Math.floor(fx), cy = Math.floor(fy);
     const at = (x, y) => (x >= 0 && y >= 0 && x < w && y < h ? this.grid[y * w + x] : -1);
-    if (at(cx, cy) >= 0) return at(cx, cy);
+    const found = { fx, fy, cx, cy, at, cell };
+    if (at(cx, cy) >= 0) return { ...found, best: at(cx, cy), bestD: 0, direct: true };
     // Forgive a near miss: small cells are hard to hit, especially by finger.
     const reach = clamp(22 / cell, 0.6, 1.6);
     let best = -1, bestD = reach;
@@ -213,7 +239,7 @@ export class Game {
       const d = Math.hypot(x + 0.5 - fx, y + 0.5 - fy);
       if (d < bestD) { bestD = d; best = id; }
     }
-    return best;
+    return { ...found, best, bestD, reach, direct: false };
   }
 
   local(e) { const r = this.canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
@@ -264,7 +290,7 @@ export class Game {
     if (this.canvas) this.canvas.style.cursor = this.zoom > 1.01 ? 'grab' : 'pointer';
     if (p.held) { if (this.preview) this.preview.until = now() + 900; this.draw(); return; }
     if (p.moved || cancelled) return;
-    const t = now(), last = this.lastTap, under = this.status === 'play' ? this.arrowAt(p.x, p.y) : -1;
+    const t = now(), last = this.lastTap, under = this.status === 'play' ? this.arrowAt(p.x, p.y, true) : -1;
     // A second click on the same spot zooms, unless the first one already sent an arrow off.
     if (last && !last.removed && last.id === under && t - last.t < DOUBLE_MS && Math.hypot(p.x - last.x, p.y - last.y) < 24) {
       this.dropMiss(); this.lastTap = null;
