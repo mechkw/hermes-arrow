@@ -39,7 +39,7 @@ export class Game {
     this.arrows = this.board.arrows.map(a => ({ id: a.id, cells: a.cells }));
     this.grid = makeGrid(w, h, this.arrows);
     this.total = this.arrows.length; this.cleared = 0; this.mistakes = 0; this.moves = 0; this.hints = 0;
-    this.lives = this.maxLives; this.status = 'play'; this.startedAt = 0; this.endedAt = 0;
+    this.lives = this.maxLives; this.status = 'play'; this.startedAt = 0; this.endedAt = 0; if (this.canvas) this.hiddenAt = 0;
     this.flying = []; this.hintId = -1; this.bumpUntil.clear();
     this.preview = null; this.lastTap = null; this.dropMiss();
     this.zoom = 1; this.panX = 0; this.panY = 0;
@@ -48,7 +48,8 @@ export class Game {
 
   get left() { return this.arrows.length; }
   get touched() { return this.moves > 0; }
-  get seconds() { return this.startedAt ? ((this.endedAt || Date.now()) - this.startedAt) / 1000 : 0; }
+  // The clock stops while the board is off screen (the modal closed to read the chat).
+  get seconds() { return this.startedAt ? ((this.endedAt || this.hiddenAt || Date.now()) - this.startedAt) / 1000 : 0; }
 
   snapshot() {
     return { status: this.status, left: this.left, total: this.total, cleared: this.cleared, lives: this.lives, maxLives: this.maxLives, started: !!this.startedAt,
@@ -106,6 +107,8 @@ export class Game {
 
   attach(canvas) {
     this.detach();
+    if (this.hiddenAt && this.startedAt && !this.endedAt) this.startedAt += Date.now() - this.hiddenAt;
+    this.hiddenAt = 0;
     this.canvas = canvas;
     const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); this.cleanup.push(() => target.removeEventListener(type, fn, opts)); };
     const observer = new ResizeObserver(() => this.resize());
@@ -125,6 +128,7 @@ export class Game {
     if (this.frame) cancelAnimationFrame(this.frame);
     for (const p of this.pointers.values()) clearTimeout(p.hold);
     this.flushMiss();
+    if (this.canvas && !this.hiddenAt) this.hiddenAt = Date.now();
     this.frame = 0; this.canvas = null; this.pointers.clear(); this.preview = null;
   }
 

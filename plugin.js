@@ -1,4 +1,4 @@
-// Hermes Arrow 0.4.1 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.4.2 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -233,6 +233,7 @@ var Game = class {
     this.status = "play";
     this.startedAt = 0;
     this.endedAt = 0;
+    if (this.canvas) this.hiddenAt = 0;
     this.flying = [];
     this.hintId = -1;
     this.bumpUntil.clear();
@@ -250,8 +251,9 @@ var Game = class {
   get touched() {
     return this.moves > 0;
   }
+  // The clock stops while the board is off screen (the modal closed to read the chat).
   get seconds() {
-    return this.startedAt ? ((this.endedAt || Date.now()) - this.startedAt) / 1e3 : 0;
+    return this.startedAt ? ((this.endedAt || this.hiddenAt || Date.now()) - this.startedAt) / 1e3 : 0;
   }
   snapshot() {
     return {
@@ -341,6 +343,8 @@ var Game = class {
   // ---- view --------------------------------------------------------------------------------
   attach(canvas) {
     this.detach();
+    if (this.hiddenAt && this.startedAt && !this.endedAt) this.startedAt += Date.now() - this.hiddenAt;
+    this.hiddenAt = 0;
     this.canvas = canvas;
     const on = (target, type, fn, opts) => {
       target.addEventListener(type, fn, opts);
@@ -362,6 +366,7 @@ var Game = class {
     if (this.frame) cancelAnimationFrame(this.frame);
     for (const p of this.pointers.values()) clearTimeout(p.hold);
     this.flushMiss();
+    if (this.canvas && !this.hiddenAt) this.hiddenAt = Date.now();
     this.frame = 0;
     this.canvas = null;
     this.pointers.clear();
@@ -1009,7 +1014,7 @@ function createTracker({
   };
   const sync = (map) => {
     const t = now2(), busy = map || {};
-    let started = false;
+    let started = false, ended = false;
     for (const id of Object.keys(busy)) {
       if (!busy[id] || tasks.has(id)) continue;
       const fresh = pending && t - pending.at < 1e4 ? pending : null;
@@ -1026,6 +1031,7 @@ function createTracker({
     for (const [id, task] of [...tasks]) {
       if (busy[id]) continue;
       tasks.delete(id);
+      ended = true;
       const duration = (t - task.start) / 1e3;
       if (duration >= 3) {
         history = [...history, Math.round(duration)].slice(-HISTORY);
@@ -1033,6 +1039,7 @@ function createTracker({
       }
       $done.set({ duration, at: t, tools: task.tools, still: tasks.size });
     }
+    if (!started && !ended) return;
     if (started) $done.set(null);
     publish();
     if (started) onStart($task.get());
@@ -1083,7 +1090,7 @@ function createTracker({
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.4.1";
+var VERSION = "0.4.2";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -1152,6 +1159,9 @@ function create(ctx) {
     colors: () => colors(),
     onChange: (snap) => $snap.set(snap),
     onEvent: (type, detail = {}) => {
+      const cue = (...args) => {
+        if (game.canvas) sound.play(...args);
+      };
       if (type === "exit" || type === "won" || type === "blocked" || type === "jam") {
         try {
           haptic("tap");
@@ -1160,27 +1170,27 @@ function create(ctx) {
       }
       if (type === "deal") {
         $result.set(null);
-        sound.play("deal");
+        cue("deal");
       }
       if (type === "exit") {
         stats.arrows++;
-        sound.play("move", game.total ? game.cleared / game.total : 0);
+        cue("move", game.total ? game.cleared / game.total : 0);
       }
-      if (type === "blocked") sound.play(game.lives === 1 ? "lastLife" : "blocked");
-      if (type === "hint") sound.play("hint");
-      if (type === "preview") sound.play(detail.clear ? "previewClear" : "previewBlocked");
-      if (type === "zoom") sound.play("zoom", detail.step);
+      if (type === "blocked") cue(game.lives === 1 ? "lastLife" : "blocked");
+      if (type === "hint") cue("hint");
+      if (type === "preview") cue(detail.clear ? "previewClear" : "previewBlocked");
+      if (type === "zoom") cue("zoom", detail.step);
       if (type === "won") {
         stats.arrows++;
         finish(true);
-        sound.play("win");
+        cue("win");
         queueNext();
         const streak = $result.get()?.streak || 0;
-        if (streak === 3 || streak >= 5 && streak % 5 === 0) ctx.setTimeout(() => sound.play("streak"), 900);
+        if (streak === 3 || streak >= 5 && streak % 5 === 0) ctx.setTimeout(() => cue("streak"), 900);
       }
       if (type === "jam") {
         finish(false);
-        sound.play("jam");
+        cue("jam");
       }
     }
   });
@@ -1684,12 +1694,25 @@ var plugin_default = {
   description: "An arrow-escape puzzle for the wait. Boards scale with how long and hard your agent is working.",
   register(ctx) {
     const app = create(ctx);
-    ctx.onDispose(() => {
-      app.stopDone?.();
-      app.tracker.dispose();
-      app.game.detach();
-      app.sound.dispose();
-    });
+    const dispose = () => {
+      try {
+        app.stopDone?.();
+        app.tracker.dispose();
+        app.game.detach();
+        app.sound.dispose();
+      } catch {
+      }
+    };
+    ctx.onDispose(dispose);
+    try {
+      this.contribute(ctx, app);
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+    globalThis.__hermesArrowDebug?.(app);
+  },
+  contribute(ctx, app) {
     ctx.registerMany([
       { id: "page", area: ROUTES_AREA, data: { path: ROUTE }, render: () => /* @__PURE__ */ jsx(app.Page, {}) },
       { id: "nav", area: SIDEBAR_NAV_AREA, order: 90, data: { path: ROUTE, label: "Arrow", codicon: "arrow-right" } },
@@ -1705,7 +1728,6 @@ var plugin_default = {
         return draft;
       } } }
     ]);
-    globalThis.__hermesArrowDebug?.(app);
   }
 };
 export {

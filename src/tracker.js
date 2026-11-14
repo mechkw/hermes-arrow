@@ -36,7 +36,7 @@ export function createTracker({ atom, busyBySession, onEvent, storage, setInterv
 
   const sync = map => {
     const t = now(), busy = map || {};
-    let started = false;
+    let started = false, ended = false;
     for (const id of Object.keys(busy)) {
       if (!busy[id] || tasks.has(id)) continue;
       const fresh = pending && t - pending.at < 10000 ? pending : null;
@@ -47,11 +47,14 @@ export function createTracker({ atom, busyBySession, onEvent, storage, setInterv
     }
     for (const [id, task] of [...tasks]) {
       if (busy[id]) continue;
-      tasks.delete(id);
+      tasks.delete(id); ended = true;
       const duration = (t - task.start) / 1000;
       if (duration >= 3) { history = [...history, Math.round(duration)].slice(-HISTORY); storage.set('history', history); }
       $done.set({ duration, at: t, tools: task.tools, still: tasks.size });
     }
+    // The app's busy map is re-derived on every session-state change, streamed tokens included.
+    // Only a turn starting or ending is news; the one-second tick keeps the clock moving.
+    if (!started && !ended) return;
     if (started) $done.set(null);
     publish();
     if (started) onStart($task.get());

@@ -155,3 +155,20 @@ test('the tracker never throws into the host or runs on its stack', async () => 
   assert.equal(tracker.$task.get().busy, false, 'the turn still ends cleanly');
   tracker.dispose();
 });
+
+test('the tracker stays quiet while a turn streams', async () => {
+  const $states = atom({}), busy = computed($states, s => Object.fromEntries(Object.entries(s).map(([id, v]) => [id, !!v.busy])));
+  const tracker = createTracker({ atom, busyBySession: busy, onEvent: () => () => {}, storage: { get: (k, d) => d, set: () => {} }, setInterval: () => () => {} });
+  let published = 0;
+  tracker.$task.listen(() => published++);
+  $states.set({ s1: { busy: true } });
+  await Promise.resolve();
+  assert.equal(published, 1, 'a turn starting is published');
+  for (let i = 0; i < 50; i++) $states.set({ s1: { busy: true, tokens: i } });
+  await Promise.resolve();
+  assert.equal(published, 1, 'fifty streamed updates publish nothing');
+  $states.set({ s1: { busy: false } });
+  await Promise.resolve();
+  assert.equal(published, 2, 'the turn ending is published');
+  tracker.dispose();
+});

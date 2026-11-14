@@ -13,7 +13,7 @@ import { createSound } from './sound.js';
 import { boardSpec, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.1';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.2';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -67,20 +67,22 @@ function create(ctx) {
     colors: () => colors(),
     onChange: snap => $snap.set(snap),
     onEvent: (type, detail = {}) => {
+      // Game sounds belong to a board you can see: a board dealt in the background for a new task stays silent.
+      const cue = (...args) => { if (game.canvas) sound.play(...args); };
       if (type === 'exit' || type === 'won' || type === 'blocked' || type === 'jam') { try { haptic('tap'); } catch { /* optional */ } }
-      if (type === 'deal') { $result.set(null); sound.play('deal'); }
-      if (type === 'exit') { stats.arrows++; sound.play('move', game.total ? game.cleared / game.total : 0); }
-      if (type === 'blocked') sound.play(game.lives === 1 ? 'lastLife' : 'blocked');
-      if (type === 'hint') sound.play('hint');
-      if (type === 'preview') sound.play(detail.clear ? 'previewClear' : 'previewBlocked');
-      if (type === 'zoom') sound.play('zoom', detail.step);
+      if (type === 'deal') { $result.set(null); cue('deal'); }
+      if (type === 'exit') { stats.arrows++; cue('move', game.total ? game.cleared / game.total : 0); }
+      if (type === 'blocked') cue(game.lives === 1 ? 'lastLife' : 'blocked');
+      if (type === 'hint') cue('hint');
+      if (type === 'preview') cue(detail.clear ? 'previewClear' : 'previewBlocked');
+      if (type === 'zoom') cue('zoom', detail.step);
       if (type === 'won') {
-        stats.arrows++; finish(true); sound.play('win'); queueNext();
+        stats.arrows++; finish(true); cue('win'); queueNext();
         // A streak landing on 3, 5 or a multiple of 5 gets its own flourish, after the win's.
         const streak = $result.get()?.streak || 0;
-        if (streak === 3 || (streak >= 5 && streak % 5 === 0)) ctx.setTimeout(() => sound.play('streak'), 900);
+        if (streak === 3 || (streak >= 5 && streak % 5 === 0)) ctx.setTimeout(() => cue('streak'), 900);
       }
-      if (type === 'jam') { finish(false); sound.play('jam'); }
+      if (type === 'jam') { finish(false); cue('jam'); }
     }
   });
 
@@ -429,7 +431,14 @@ export default {
   description: 'An arrow-escape puzzle for the wait. Boards scale with how long and hard your agent is working.',
   register(ctx) {
     const app = create(ctx);
-    ctx.onDispose(() => { app.stopDone?.(); app.tracker.dispose(); app.game.detach(); app.sound.dispose(); });
+    const dispose = () => { try { app.stopDone?.(); app.tracker.dispose(); app.game.detach(); app.sound.dispose(); } catch { /* already gone */ } };
+    ctx.onDispose(dispose);
+    // A registration that fails must not leave our listeners on the host's stores.
+    try { this.contribute(ctx, app); } catch (error) { dispose(); throw error; }
+    // Test harness seam: absent in the app, so this is a no-op there.
+    globalThis.__hermesArrowDebug?.(app);
+  },
+  contribute(ctx, app) {
     ctx.registerMany([
       { id: 'page', area: ROUTES_AREA, data: { path: ROUTE }, render: () => <app.Page /> },
       { id: 'nav', area: SIDEBAR_NAV_AREA, order: 90, data: { path: ROUTE, label: 'Arrow', codicon: 'arrow-right' } },
@@ -441,7 +450,5 @@ export default {
       // Read-only: the draft passes through untouched. Its wording seeds the difficulty estimate.
       { id: 'prompt', area: COMPOSER_AREAS.middleware, data: { handler: draft => { try { app.tracker.sawPrompt(draft); } catch { /* never block a send */ } return draft; } } }
     ]);
-    // Test harness seam: absent in the app, so this is a no-op there.
-    globalThis.__hermesArrowDebug?.(app);
   }
 };

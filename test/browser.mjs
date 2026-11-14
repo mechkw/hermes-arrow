@@ -346,6 +346,19 @@ try {
   assert.match(await bg(), /40%/, 'and remembers the transparency');
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('[data-hermes-arrow-modal]').count(), 0, 'Escape closes it');
+  // Off screen, the board's clock stops and a board dealt for a new task makes no sound.
+  const hiddenClock = await page.evaluate(() => window.arrow.game.seconds);
+  await page.waitForTimeout(1300);
+  assert.equal(await page.evaluate(() => window.arrow.game.seconds), hiddenClock, 'the clock does not run while the game is closed');
+  await page.evaluate(() => window.arrow.open());
+  await page.waitForSelector('[data-hermes-arrow-modal] canvas');
+  await page.waitForTimeout(600);
+  const shownClock = await page.evaluate(() => window.arrow.game.seconds);
+  assert.ok(shownClock > hiddenClock && shownClock < hiddenClock + 1.2, `and resumes where it stopped (${hiddenClock.toFixed(1)} → ${shownClock.toFixed(1)})`);
+  await page.keyboard.press('Escape');
+  const heard = (await played(page)).length;
+  await page.evaluate(() => { window.arrow.deal(2); });
+  assert.equal((await played(page)).length, heard, 'a board dealt in the background is silent');
   await page.close();
 
   // An older Desktop without the pill strip gets the offer under the composer instead.
