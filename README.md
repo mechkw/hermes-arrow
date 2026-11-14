@@ -2,7 +2,7 @@
 
 An arrow-escape puzzle for Hermes Desktop, for the time your agent spends working.
 
-Every arrow is a snake on a grid. Tap one and it slides out head-first, as long as nothing sits between its head and the edge of the board. Tap one that is blocked and you lose one of three lives. Clear the board.
+Every arrow is a snake on a grid. Tap one and it slides out head-first, as long as nothing sits between its head and the edge of the board. Tap one that is blocked and you lose a life (two on the smallest boards, five on the largest). Clear the board.
 
 The board you are dealt scales with the task you gave the agent.
 
