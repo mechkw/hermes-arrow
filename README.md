@@ -34,10 +34,14 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 - Keys: `H` hint, `R` restart, `F` fit, `M` mute, `[` / `]` volume, `N` new board (free play).
 - Mute (♪) stays in the header; the volume slider is under ⚙. The level is remembered, and moving it un-mutes.
 - `−` / `+` around the level in the top bar (and on the cleared and jammed cards) deal a board at another level at any time. During a task that overrides the level chosen for it until the next task starts.
-- Difficulty handicap under ⚙, from Much easier to Much harder. It keeps the level and board size and deals from the easy or hard end of a batch of 16 random boards (ranked by how many arrows can leave at the start), with one life more or fewer and points ×0.85 or ×1.15 per step.
+- Difficulty handicap under ⚙, from Much easier to Much harder. It keeps the level and board size and changes how the board is built: harder steps leave fewer arrows free at any moment and add more long arrows. Each step is also one life fewer or more and points ×1.15 or ×0.85.
 - In the see-through modal the top bar is always halfway between the board's opacity and solid.
 - Hints cost points and each costs more than the last: 5%, 10%, 15%… of the board's points (5, 15, 30, 50, 75% in total), never below 20% of the board. The Hint button shows the next price.
 - A tap that lands on a blocked arrow within a quarter-cell or so of one that can leave goes to the one that can leave.
+
+## Boards
+
+Every board is generated at random and is always solvable; there are no stored puzzles. The generator packs the silhouette, lays a few arrows one to two board lengths long, and builds bottlenecks: stretches where only one or two arrows can leave, usually because a long arrow is held by a small nest of short ones. Higher levels and harder handicaps make those stretches longer.
 
 ## Lives, time and points
 

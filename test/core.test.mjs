@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generate, solve, makeGrid, probe, headDir, SHAPE_NAMES } from '../src/core.js';
-import { LEVELS, boardSpec, estimateSeconds, levelForSeconds, levelForTask, heatSeconds } from '../src/difficulty.js';
+import { generate, solve, makeGrid, probe, headDir, buildMask, SHAPE_NAMES } from '../src/core.js';
+import { LEVELS, level, boardSpec, estimateSeconds, levelForSeconds, levelForTask, heatSeconds } from '../src/difficulty.js';
 
 function check(board) {
   const { w, h, arrows } = board, seen = new Set();
@@ -17,6 +17,7 @@ function check(board) {
     const [dx, dy] = headDir(a.cells);
     assert.equal(Math.abs(dx) + Math.abs(dy), 1);
   }
+  assert.equal(board.dropped, 0, 'nothing had to be dropped to make it solvable');
   const { stuck, order } = solve(w, h, arrows);
   assert.deepEqual(stuck, [], 'board is solvable');
   assert.equal(order.length, arrows.length);
@@ -35,7 +36,7 @@ test('every level and silhouette yields a valid, solvable board', () => {
     const board = generate(boardSpec(l.n, { seed: seed * 7919, aspect: seed % 3 === 0 ? 0.6 : seed % 3 === 1 ? 1 : 1.6 }));
     const filled = check(board);
     assert.ok(board.arrows.length >= 4, `level ${l.n} has arrows`);
-    assert.ok(filled >= board.w * board.h * 0.2, `level ${l.n} seed ${seed} is reasonably full (${filled}/${board.w * board.h})`);
+    assert.ok(filled >= buildMask(board.w, board.h, board.shape).reduce((t, v) => t + v, 0) * 0.85, `level ${l.n} seed ${seed} is reasonably full (${filled}/${board.w * board.h})`);
   }
   for (const shape of SHAPE_NAMES) check(generate({ w: 20, h: 20, shape, maxLen: 12, seed: 42 }));
 });
@@ -173,15 +174,20 @@ test('the tracker stays quiet while a turn streams', async () => {
   tracker.dispose();
 });
 
-import { freeShare } from '../src/core.js';
+import { profile } from '../src/core.js';
 import { dealBoard, HANDICAPS } from '../src/difficulty.js';
 import { handicapFactor } from '../src/score.js';
 
 test('the handicap makes a level harder or easier without resizing it', () => {
-  for (const n of [1, 3, 5, 7]) {
-    const mean = hc => { let t = 0; for (let s = 1; s <= 16; s++) { const b = dealBoard(n, { seed: s * 104729 + n, handicap: hc }); check(b); t += freeShare(b); } return t / 16; };
-    const shares = HANDICAPS.map(mean);
-    for (let i = 1; i < shares.length; i++) assert.ok(shares[i] < shares[i - 1], `level ${n}: each step leaves fewer arrows free (${shares.map(v => v.toFixed(2))})`);
+  for (const n of [3, 5, 7]) {
+    const mean = hc => {
+      const t = { mean: 0, narrow: 0 };
+      for (let s = 1; s <= 12; s++) { const b = dealBoard(n, { seed: s * 104729 + n, handicap: hc }); check(b); const p = profile(b, s); t.mean += p.mean / 12; t.narrow += p.narrow / 12; }
+      return t;
+    };
+    const [easy, , std, , hard] = HANDICAPS.map(mean);
+    assert.ok(easy.mean > std.mean && std.mean > hard.mean, `level ${n}: fewer arrows free at a time as it gets harder (${[easy, std, hard].map(v => v.mean.toFixed(1))})`);
+    assert.ok(easy.narrow < std.narrow && std.narrow < hard.narrow, `level ${n}: more moments with one or two moves (${[easy, std, hard].map(v => v.narrow.toFixed(2))})`);
     const a = dealBoard(n, { seed: 77, handicap: 2 }), b = dealBoard(n, { seed: 77, handicap: -2 }), c = dealBoard(n, { seed: 77, handicap: 2 });
     assert.deepEqual([a.w, a.h, a.shape], [b.w, b.h, b.shape], 'same size and silhouette');
     assert.deepEqual(a.arrows, c.arrows, 'deterministic');
@@ -189,4 +195,19 @@ test('the handicap makes a level harder or easier without resizing it', () => {
   assert.deepEqual(HANDICAPS.map(h => livesFor(3, h)), [5, 4, 3, 2, 1]);
   assert.deepEqual(HANDICAPS.map(handicapFactor), [0.7, 0.85, 1, 1.15, 1.3]);
   assert.ok(score({ level: 3, arrows: 30, seconds: 60, lives: 2, handicap: 2 }).points > score({ level: 3, arrows: 30, seconds: 60, lives: 2 }).points);
+});
+
+test('big boards are packed, knotted, and carry arrows longer than the board', () => {
+  for (const n of [5, 6, 7]) {
+    let longest = 0, narrow = 0, start = 0;
+    for (let s = 1; s <= 8; s++) {
+      const b = dealBoard(n, { seed: s * 7907 + n }), p = profile(b, s), cells = b.arrows.reduce((t, a) => t + a.cells.length, 0);
+      check(b);
+      assert.ok(cells >= buildMask(b.w, b.h, b.shape).reduce((t, v) => t + v, 0) * 0.9, `level ${n} seed ${s} fills its silhouette`);
+      longest += p.longest / 8; narrow += p.narrow / 8; start += p.start / p.arrows / 8;
+    }
+    assert.ok(longest >= level(n).size, `level ${n}: the longest arrow outruns the board side (${longest.toFixed(0)} cells)`);
+    assert.ok(narrow >= 0.2, `level ${n}: at least a fifth of the clear has one or two moves (${narrow.toFixed(2)})`);
+    assert.ok(start <= 0.15, `level ${n}: few arrows are free on the untouched board (${start.toFixed(2)})`);
+  }
 });

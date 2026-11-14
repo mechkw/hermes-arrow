@@ -13,7 +13,7 @@ import { createSound } from './sound.js';
 import { boardSpec, dealBoard, handicap, HANDICAP_NAMES, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.5.0';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.6.0';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
