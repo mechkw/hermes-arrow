@@ -1,0 +1,20 @@
+{
+  "name": "hermes-arrow",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "Arrow-escape puzzle for Hermes Desktop that scales with the task your agent is working on.",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.mjs",
+    "dev": "node scripts/build.mjs --dev"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "playwright": "^1.56.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}
