@@ -2,7 +2,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
-import { host, events, emit, useValue, atom } from '@hermes/plugin-sdk';
+import { host, events, emit, useValue, atom, $sessionStates } from '@hermes/plugin-sdk';
 
 const contributions = [], disposers = [], memory = new Map();
 const $hash = atom(window.location.hash);
@@ -18,15 +18,21 @@ const ctx = {
 };
 globalThis.__hermesArrowDebug = app => { window.arrow = app; };
 // `?busy` loads the plugin while a turn is already running, as happens when the Desktop reloads plugins mid-task.
-if (window.location.search.includes('busy')) host.state.busyBySession.set({ s0: true });
+if (window.location.search.includes('busy')) $sessionStates.set({ s0: { busy: true } });
 plugin.register(ctx);
 
 const find = area => contributions.filter(c => c.area === area);
 // The fake agent. `send` runs the composer middleware exactly as the app would before a turn starts.
 window.agent = {
-  send(text, id = 's1') { for (const c of find('composer.middleware')) c.data.handler({ text }); host.state.busyBySession.set({ ...host.state.busyBySession.get(), [id]: true }); },
+  // As the app does it: middleware, then mark the chat busy, THEN send. If the busy write throws, the message is never sent.
+  sent: [],
+  send(text, id = 's1') {
+    for (const c of find('composer.middleware')) c.data.handler({ text });
+    $sessionStates.set({ ...$sessionStates.get(), [id]: { busy: true } });
+    this.sent.push(text);
+  },
   tool(id = 's1') { emit('tool.start', { session_id: id, payload: {} }); },
-  finish(id = 's1') { host.state.busyBySession.set({ ...host.state.busyBySession.get(), [id]: false }); }
+  finish(id = 's1') { $sessionStates.set({ ...$sessionStates.get(), [id]: { busy: false } }); }
 };
 
 function Shell() {

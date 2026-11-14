@@ -13,7 +13,7 @@ import { createSound } from './sound.js';
 import { boardSpec, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.0';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.4.1';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -102,21 +102,35 @@ function create(ctx) {
     stopAuto = ctx.setTimeout(() => { stopAuto = null; $auto.set(0); if (game.status === 'won') deal(); }, 4000);
   }
 
+  // Something of ours failed while reacting to the host. Say so once, keep the details, carry on.
+  let reported = false;
+  const report = (where, error) => {
+    const detail = { where, message: String(error?.message || error), stack: String(error?.stack || '').slice(0, 1500), version: VERSION, at: Date.now() };
+    try { console.error('[hermes-arrow]', where, error); } catch { /* no console */ }
+    store('lastError', detail);
+    if (reported) return;
+    reported = true;
+    try { host.notify?.({ kind: 'warning', title: 'Hermes Arrow', message: `The game hit an error (${where}): ${detail.message}. Your chat is not affected.` }); } catch { /* optional */ }
+  };
+
   const tracker = createTracker({
+    onError: report,
     atom, storage: { get: stored, set: store },
     busyBySession: host.state.busyBySession,
     onEvent: (type, fn) => ctx.onEvent(type, fn),
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
     // A new task replaces a board nobody has started; a board in progress is left alone.
-    onStart: () => { if (game.status !== 'play' || !game.touched) deal(); }
+    onStart: () => { try { if (game.status !== 'play' || !game.touched) deal(); } catch (error) { report('deal', error); } }
   });
 
   // Hear the agent finish while your eyes are on the board.
   let doneAt = 0;
   const stopDone = tracker.$done.subscribe(done => {
-    if (!done || done.at === doneAt) return;
-    doneAt = done.at;
-    if (done.duration >= 2 && (onGame() || $modal.get())) sound.play('agentDone');
+    try {
+      if (!done || done.at === doneAt) return;
+      doneAt = done.at;
+      if (done.duration >= 2 && (onGame() || $modal.get())) sound.play('agentDone');
+    } catch (error) { report('done', error); }
   });
 
   const restart = () => { game.reset(); sound.play('deal'); };
@@ -395,7 +409,10 @@ function create(ctx) {
   }
 
   // The offer beside the composer: a pill that exists only while that chat's turn is running.
-  const offers = ({ busy } = {}) => (busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: 'Play Arrow', icon: 'game', run: open }] : []);
+  const offers = ({ busy } = {}) => {
+    try { return busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: 'Play Arrow', icon: 'game', run: () => { try { open(); } catch (error) { report('offer', error); } } }] : []; }
+    catch (error) { report('offers', error); return []; }
+  };
   // Older Desktops have no pill strip: the same offer as a quiet link under the composer.
   function OfferLink() {
     const task = useValue(tracker.$task), offer = useValue($offer), isOpen = useValue($modal);
@@ -403,7 +420,7 @@ function create(ctx) {
     return <Button size="sm" variant="ghost" onClick={open}>➤ Play Arrow</Button>;
   }
 
-  return { Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  return { report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 
 export default {

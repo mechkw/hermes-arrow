@@ -129,3 +129,29 @@ test('hints cost points, and each one costs more than the last', () => {
   assert.equal(nextHintCost(60), 0);
   assert.equal(settle({}, { won: true, ...base, hints: 2 }).result.hint, 0.85, 'the win records what hints cost');
 });
+
+import { atom, computed } from 'nanostores';
+import { createTracker } from '../src/tracker.js';
+
+test('the tracker never throws into the host or runs on its stack', async () => {
+  // The app derives busy from its session store and writes that store inside its send path.
+  const $states = atom({}), busy = computed($states, s => Object.fromEntries(Object.entries(s).map(([id, v]) => [id, !!v.busy])));
+  const errors = [], handlers = new Map(), kept = new Map();
+  let ran = 0;
+  const tracker = createTracker({
+    atom, busyBySession: busy, onEvent: (type, fn) => { handlers.set(type, fn); return () => {}; },
+    storage: { get: (k, d) => kept.get(k) ?? d, set: () => { throw new Error('storage is broken'); } },
+    setInterval: () => () => {}, onStart: () => { ran++; throw new Error('boom'); }, onError: (where, e) => errors.push(`${where}: ${e.message}`)
+  });
+  assert.doesNotThrow(() => $states.set({ s1: { busy: true } }), 'a failing reaction cannot abort the host write');
+  assert.equal(ran, 0, 'and it has not run yet: nothing of ours is on the host stack');
+  await Promise.resolve();
+  assert.equal(ran, 1);
+  assert.deepEqual(errors, ['busy: boom'], 'the failure is reported instead');
+  assert.doesNotThrow(() => handlers.get('tool.start')({ session_id: 's1' }));
+  assert.doesNotThrow(() => tracker.sawPrompt(null));
+  assert.doesNotThrow(() => $states.set({ s1: { busy: false } }));
+  await Promise.resolve();
+  assert.equal(tracker.$task.get().busy, false, 'the turn still ends cleanly');
+  tracker.dispose();
+});

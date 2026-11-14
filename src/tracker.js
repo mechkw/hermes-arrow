@@ -1,5 +1,11 @@
 // Watches the agent's turns. Host doors are injected so this runs under test without the app.
 //
+// SAFETY: the host calls store listeners synchronously, from inside its own state writes. The busy
+// map changes inside the app's send path (it marks the chat busy, then sends), so an exception or
+// slow work in a listener here would abort or stall the user's message. Nothing in this file runs
+// on the host's stack: every callback is deferred to a microtask and wrapped, and an error is
+// handed to `onError` instead of thrown.
+//
 //   $task  what the agent is doing now, refreshed every second while it works
 //   $done  the turn that most recently finished, until the next one starts
 
@@ -7,11 +13,16 @@ import { estimateSeconds, levelForTask } from './difficulty.js';
 
 const HISTORY = 40;
 
-export function createTracker({ atom, busyBySession, onEvent, storage, setInterval, now = Date.now, onStart = () => {} }) {
+export function createTracker({ atom, busyBySession, onEvent, storage, setInterval, now = Date.now, onStart = () => {}, onError = () => {},
+  defer = fn => (typeof queueMicrotask === 'function' ? queueMicrotask(fn) : Promise.resolve().then(fn)) }) {
+  /** Wrap a host callback: never throws into the host, never runs on its stack. */
+  const safe = (where, fn) => (...args) => {
+    try { defer(() => { try { fn(...args); } catch (error) { try { onError(where, error); } catch { /* reporting is best-effort */ } } }); } catch { /* could not even defer */ }
+  };
   const $task = atom({ busy: false }), $done = atom(null);
   const tasks = new Map();
   let history = [].concat(storage.get('history', []) || []).filter(n => Number.isFinite(n)).slice(-HISTORY);
-  let pending = null, live = false;
+  let pending = null;
 
   const publish = () => {
     let first = null;
@@ -43,23 +54,22 @@ export function createTracker({ atom, busyBySession, onEvent, storage, setInterv
     }
     if (started) $done.set(null);
     publish();
-    // Never during construction (a turn already running when the plugin loads): the caller does not hold the tracker yet.
-    if (started && live) onStart($task.get());
+    if (started) onStart($task.get());
   };
 
   const owner = event => tasks.get(event?.session_id) || (tasks.size === 1 ? tasks.values().next().value : null);
   const stops = [
-    busyBySession.subscribe(sync),
-    onEvent('tool.start', e => { const t = owner(e); if (t) { t.tools++; publish(); } }),
-    onEvent('subagent.start', e => { const t = owner(e); if (t) { t.subagents++; publish(); } }),
-    setInterval(() => { if (tasks.size) publish(); }, 1000)
+    // Deferred, so a turn already running when the plugin loads reaches `onStart` after the caller holds the tracker.
+    busyBySession.subscribe(safe('busy', sync)),
+    onEvent('tool.start', safe('tool.start', e => { const t = owner(e); if (t) { t.tools++; publish(); } })),
+    onEvent('subagent.start', safe('subagent.start', e => { const t = owner(e); if (t) { t.subagents++; publish(); } })),
+    setInterval(safe('tick', () => { if (tasks.size) publish(); }), 1000)
   ];
-  live = true;
 
   return {
     $task, $done,
     /** The composer saw a message go out: remember it for the turn that is about to start. */
-    sawPrompt(draft) { pending = { text: String(draft?.text || ''), attachments: draft?.attachments?.length || 0, at: now() }; },
+    sawPrompt(draft) { try { pending = { text: String(draft?.text || ''), attachments: draft?.attachments?.length || 0, at: now() }; } catch { /* never block a send */ } },
     dismiss() { $done.set(null); },
     history: () => history.slice(),
     dispose() { for (const stop of stops) if (typeof stop === 'function') stop(); }

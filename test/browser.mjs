@@ -355,6 +355,16 @@ try {
   await page.waitForSelector('[data-hermes-arrow-modal] canvas');
   await page.close();
 
+  // Whatever goes wrong inside the plugin, the user's message still goes out.
+  page = await open({ width: 1180, height: 760 });
+  await page.evaluate(() => { window.arrow.game.deal = () => { throw new Error('boom'); }; });
+  errors.length = 0;
+  assert.equal(await page.evaluate(() => { window.agent.send('Do the thing.'); return window.agent.sent.length; }), 1, 'a plugin failure on send does not stop the send');
+  await page.waitForTimeout(200);
+  assert.ok(errors.some(e => e.includes('[hermes-arrow]')), 'the failure is logged');
+  errors.length = 0;
+  await page.close();
+
   // The plugin must survive being loaded while the agent is already working.
   page = await open({ width: 1180, height: 760 }, undefined, '?busy=1');
   await page.click('a:has-text("Arrow")');

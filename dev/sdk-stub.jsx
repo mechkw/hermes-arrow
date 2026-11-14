@@ -1,16 +1,10 @@
 // A stand-in for @hermes/plugin-sdk, just enough to run the plugin in a plain browser tab.
-import { cloneElement, createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useState } from 'react';
 
-export function atom(initial) {
-  let value = initial; const subs = new Set();
-  return {
-    get: () => value,
-    set(next) { value = next; for (const fn of [...subs]) fn(value); },
-    subscribe(fn) { subs.add(fn); fn(value); return () => subs.delete(fn); },
-    listen(fn) { subs.add(fn); return () => subs.delete(fn); }
-  };
-}
-export const useValue = a => useSyncExternalStore(cb => a.listen(cb), a.get);
+// The real store libraries, at the app's versions: a listener that throws inside `set` must behave here as it does there.
+export { atom, computed } from 'nanostores';
+export { useStore as useValue } from '@nanostores/react';
+import { atom, computed } from 'nanostores';
 
 export const ROUTES_AREA = 'routes', SIDEBAR_NAV_AREA = 'sidebar.nav', PALETTE_AREA = 'palette';
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' };
@@ -21,8 +15,10 @@ export const COMPOSER_AREAS = { middleware: 'composer.middleware', underside: 'c
 export const events = new Map();
 export const emit = (type, event) => { for (const fn of events.get(type) || []) fn(event); };
 export const $route = atom('/');
+export const $sessionStates = atom({});
 export const host = {
-  state: { busyBySession: atom({}) },
+  // As in the app: busy is derived from the session-state store, so plugin listeners run inside the app's own writes.
+  state: { busyBySession: computed($sessionStates, states => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, Boolean(st.busy)]))) },
   navigate(path) { window.location.hash = path; },
   notify() {}
 };

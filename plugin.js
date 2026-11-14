@@ -1,4 +1,4 @@
-// Hermes Arrow 0.4.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.4.1 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -956,12 +956,38 @@ function boardSpec(n, { aspect = 1, seed = 1 } = {}) {
 
 // src/tracker.js
 var HISTORY = 40;
-function createTracker({ atom: atom2, busyBySession, onEvent, storage, setInterval, now: now2 = Date.now, onStart = () => {
-} }) {
+function createTracker({
+  atom: atom2,
+  busyBySession,
+  onEvent,
+  storage,
+  setInterval,
+  now: now2 = Date.now,
+  onStart = () => {
+  },
+  onError = () => {
+  },
+  defer = (fn) => typeof queueMicrotask === "function" ? queueMicrotask(fn) : Promise.resolve().then(fn)
+}) {
+  const safe = (where, fn) => (...args) => {
+    try {
+      defer(() => {
+        try {
+          fn(...args);
+        } catch (error) {
+          try {
+            onError(where, error);
+          } catch {
+          }
+        }
+      });
+    } catch {
+    }
+  };
   const $task = atom2({ busy: false }), $done = atom2(null);
   const tasks = /* @__PURE__ */ new Map();
   let history = [].concat(storage.get("history", []) || []).filter((n) => Number.isFinite(n)).slice(-HISTORY);
-  let pending = null, live = false;
+  let pending = null;
   const publish = () => {
     let first = null;
     for (const t of tasks.values()) if (!first || t.start < first.start) first = t;
@@ -1009,36 +1035,39 @@ function createTracker({ atom: atom2, busyBySession, onEvent, storage, setInterv
     }
     if (started) $done.set(null);
     publish();
-    if (started && live) onStart($task.get());
+    if (started) onStart($task.get());
   };
   const owner = (event) => tasks.get(event?.session_id) || (tasks.size === 1 ? tasks.values().next().value : null);
   const stops = [
-    busyBySession.subscribe(sync),
-    onEvent("tool.start", (e) => {
+    // Deferred, so a turn already running when the plugin loads reaches `onStart` after the caller holds the tracker.
+    busyBySession.subscribe(safe("busy", sync)),
+    onEvent("tool.start", safe("tool.start", (e) => {
       const t = owner(e);
       if (t) {
         t.tools++;
         publish();
       }
-    }),
-    onEvent("subagent.start", (e) => {
+    })),
+    onEvent("subagent.start", safe("subagent.start", (e) => {
       const t = owner(e);
       if (t) {
         t.subagents++;
         publish();
       }
-    }),
-    setInterval(() => {
+    })),
+    setInterval(safe("tick", () => {
       if (tasks.size) publish();
-    }, 1e3)
+    }), 1e3)
   ];
-  live = true;
   return {
     $task,
     $done,
     /** The composer saw a message go out: remember it for the turn that is about to start. */
     sawPrompt(draft) {
-      pending = { text: String(draft?.text || ""), attachments: draft?.attachments?.length || 0, at: now2() };
+      try {
+        pending = { text: String(draft?.text || ""), attachments: draft?.attachments?.length || 0, at: now2() };
+      } catch {
+      }
     },
     dismiss() {
       $done.set(null);
@@ -1054,7 +1083,7 @@ function createTracker({ atom: atom2, busyBySession, onEvent, storage, setInterv
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.4.0";
+var VERSION = "0.4.1";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -1178,7 +1207,23 @@ function create(ctx) {
       if (game.status === "won") deal();
     }, 4e3);
   }
+  let reported = false;
+  const report = (where, error) => {
+    const detail = { where, message: String(error?.message || error), stack: String(error?.stack || "").slice(0, 1500), version: VERSION, at: Date.now() };
+    try {
+      console.error("[hermes-arrow]", where, error);
+    } catch {
+    }
+    store("lastError", detail);
+    if (reported) return;
+    reported = true;
+    try {
+      host.notify?.({ kind: "warning", title: "Hermes Arrow", message: `The game hit an error (${where}): ${detail.message}. Your chat is not affected.` });
+    } catch {
+    }
+  };
   const tracker = createTracker({
+    onError: report,
     atom,
     storage: { get: stored, set: store },
     busyBySession: host.state.busyBySession,
@@ -1186,14 +1231,22 @@ function create(ctx) {
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
     // A new task replaces a board nobody has started; a board in progress is left alone.
     onStart: () => {
-      if (game.status !== "play" || !game.touched) deal();
+      try {
+        if (game.status !== "play" || !game.touched) deal();
+      } catch (error) {
+        report("deal", error);
+      }
     }
   });
   let doneAt = 0;
   const stopDone = tracker.$done.subscribe((done) => {
-    if (!done || done.at === doneAt) return;
-    doneAt = done.at;
-    if (done.duration >= 2 && (onGame() || $modal.get())) sound.play("agentDone");
+    try {
+      if (!done || done.at === doneAt) return;
+      doneAt = done.at;
+      if (done.duration >= 2 && (onGame() || $modal.get())) sound.play("agentDone");
+    } catch (error) {
+      report("done", error);
+    }
   });
   const restart = () => {
     game.reset();
@@ -1604,13 +1657,26 @@ function create(ctx) {
       ) })
     ] });
   }
-  const offers = ({ busy } = {}) => busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: "Play Arrow", icon: "game", run: open }] : [];
+  const offers = ({ busy } = {}) => {
+    try {
+      return busy && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: "Play Arrow", icon: "game", run: () => {
+        try {
+          open();
+        } catch (error) {
+          report("offer", error);
+        }
+      } }] : [];
+    } catch (error) {
+      report("offers", error);
+      return [];
+    }
+  };
   function OfferLink() {
     const task = useValue(tracker.$task), offer = useValue($offer), isOpen = useValue($modal);
     if (!task.busy || !offer || isOpen || onGame()) return null;
     return /* @__PURE__ */ jsx(Button, { size: "sm", variant: "ghost", onClick: open, children: "\u27A4 Play Arrow" });
   }
-  return { Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
+  return { report, Page, Chip, offers, OfferLink, close, $modal, $fade, $offer, tracker, game, open, deal, sound, stopDone, stats: () => stats, $result };
 }
 var plugin_default = {
   id: ID,
