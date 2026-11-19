@@ -16,9 +16,10 @@ export const events = new Map();
 export const emit = (type, event) => { for (const fn of events.get(type) || []) fn(event); };
 export const $route = atom('/');
 export const $sessionStates = atom({});
+export const $usage = atom(null);
 export const host = {
   // As in the app: busy is derived from the session-state store, so plugin listeners run inside the app's own writes.
-  state: { busyBySession: computed($sessionStates, states => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, Boolean(st.busy)]))) },
+  state: { focusedUsage: $usage, busyBySession: computed($sessionStates, states => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, Boolean(st.busy)]))) },
   navigate(path) { window.location.hash = path; },
   notify() {}
 };

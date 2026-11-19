@@ -2,7 +2,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
-import { host, events, emit, useValue, atom, $sessionStates } from '@hermes/plugin-sdk';
+import { host, events, emit, useValue, atom, $sessionStates, $usage } from '@hermes/plugin-sdk';
 
 const contributions = [], disposers = [], memory = new Map();
 const $hash = atom(window.location.hash);
@@ -24,6 +24,8 @@ plugin.register(ctx);
 const find = area => contributions.filter(c => c.area === area);
 // The fake agent. `send` runs the composer middleware exactly as the app would before a turn starts.
 window.agent = {
+  /** The agent's reported rolling tokens per second (0 clears it). */
+  tps(v) { $usage.set(v ? { calls: 1, input: 0, output: 0, total: 0, avg_tps: v } : null); },
   // As the app does it: middleware, then mark the chat busy, THEN send. If the busy write throws, the message is never sent.
   sent: [],
   send(text, id = 's1') {

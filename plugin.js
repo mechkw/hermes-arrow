@@ -1,4 +1,4 @@
-// Hermes Arrow 0.6.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.7.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -403,6 +403,7 @@ var Game = class {
     this.grid = makeGrid(w, h, this.arrows);
     this.total = this.arrows.length;
     this.cleared = 0;
+    this.dots = 0;
     this.mistakes = 0;
     this.moves = 0;
     this.hints = 0;
@@ -438,6 +439,7 @@ var Game = class {
       left: this.left,
       total: this.total,
       cleared: this.cleared,
+      dots: this.dots || 0,
       lives: this.lives,
       maxLives: this.maxLives,
       started: !!this.startedAt,
@@ -487,6 +489,7 @@ var Game = class {
       this.arrows = this.arrows.filter((a) => a !== arrow);
       this.flying.push({ kind: "exit", cells: arrow.cells, t0: now(), reach: this.exitReach(arrow.cells) });
       this.cleared++;
+      this.dots += arrow.cells.length;
       if (!this.arrows.length) {
         this.status = "won";
         this.endedAt = Date.now();
@@ -927,6 +930,11 @@ function score({ level: level2 = 1, arrows = 0, seconds = 0, lives = 0, streak =
   const odds = handicapFactor(handicap2);
   return { points: Math.round(base * difficulty * time * life * run * hint * odds), base, difficulty, time, life, run, hint, hints, odds, handicap: handicap2 };
 }
+function pace({ dots = 0, arrows = 0, seconds = 0 } = {}) {
+  if (!(seconds >= 2) || !dots) return { tps: 0, aps: 0 };
+  return { tps: dots / seconds, aps: arrows / seconds };
+}
+var rate = (v) => v >= 9.95 ? String(Math.round(v)) : v.toFixed(1);
 function settle(stats, outcome, now2 = Date.now()) {
   const next = { boards: 0, arrows: 0, points: 0, best: 0, bestStreak: 0, ...stats, streak: liveStreak(stats, now2), lastPlay: now2 };
   if (!outcome.won) return { stats: { ...next, streak: 0 }, result: null, lost: next.streak };
@@ -1015,10 +1023,10 @@ function createSound(isOn, volume = () => 0.7) {
     out.gain.value = MASTER * v * v;
     return ctx;
   };
-  const sample = (ac, { clip, rate = 1, dur = 1, gain = 0.5 }) => {
+  const sample = (ac, { clip, rate: rate2 = 1, dur = 1, gain = 0.5 }) => {
     const src = ac.createBufferSource(), amp = ac.createGain(), t = ac.currentTime;
     src.buffer = buffers[clip];
-    src.playbackRate.value = Math.max(0.25, Math.min(4, rate));
+    src.playbackRate.value = Math.max(0.25, Math.min(4, rate2));
     const length = Math.min(dur, src.buffer.duration / src.playbackRate.value), fade = Math.min(0.12, length * 0.5);
     amp.gain.setValueAtTime(gain, t);
     amp.gain.setValueAtTime(gain, t + length - fade);
@@ -1290,7 +1298,7 @@ function createTracker({
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.6.0";
+var VERSION = "0.7.0";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -1345,6 +1353,14 @@ function create(ctx) {
   $offer.set(stored("offer", true) !== false);
   $handicap.set(handicap(stored("handicap", 0)));
   const sound = createSound(() => $sound.get(), () => $volume.get());
+  const agentTps = () => {
+    try {
+      const v = Number(host.state.focusedUsage?.get?.()?.avg_tps);
+      return v > 0 ? v : 0;
+    } catch {
+      return 0;
+    }
+  };
   const saveStats = (next) => {
     stats = next;
     store("stats", stats);
@@ -1353,8 +1369,10 @@ function create(ctx) {
   const finish = (won) => {
     const s = game.snapshot();
     const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints, handicap: s.handicap });
+    const speed = pace({ dots: s.dots, arrows: s.cleared, seconds: s.seconds });
+    if (won && speed.tps > (next.bestTps || 0)) next.bestTps = speed.tps;
     saveStats(next);
-    $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
+    $result.set(won ? { ...result, total: next.points, ...speed, agentTps: agentTps() } : { lostStreak: lost });
   };
   const game = new Game({
     colors: () => colors(),
@@ -1584,6 +1602,24 @@ function create(ctx) {
     }, [running]);
     return /* @__PURE__ */ jsx("span", { style: { ...S.num, color: snap.started ? "var(--ui-text-primary)" : "var(--ui-text-quaternary)" }, "aria-label": "Board time", children: clock(snap.started ? game.seconds : 0) });
   }
+  function Pace({ snap }) {
+    const [, tick] = useState(0);
+    const running = snap.status === "play" && snap.started;
+    useEffect(() => {
+      if (!running) return;
+      const id = window.setInterval(() => tick((n) => n + 1), 500);
+      return () => window.clearInterval(id);
+    }, [running]);
+    const { tps, aps } = pace({ dots: snap.dots, arrows: snap.cleared, seconds: snap.started ? game.seconds : 0 }), theirs = agentTps();
+    const label = `Your speed, counted the way your agent's is: every grid dot you uncover is a token. ${tps ? `${rate(tps)} dots a second, ${aps.toFixed(2)} arrows a second.` : "It shows once you have played a couple of seconds."}${theirs ? ` Hermes is averaging ${rate(theirs)} t/s in this chat.` : ""}`;
+    return /* @__PURE__ */ jsx(Tip, { label, children: /* @__PURE__ */ jsxs("span", { style: { ...S.num, color: tps ? "var(--ui-text-primary)" : "var(--ui-text-quaternary)" }, "aria-label": "Your pace", children: [
+      tps ? rate(tps) : "\u2013",
+      /* @__PURE__ */ jsxs("span", { style: S.muted, children: [
+        " t/s",
+        theirs ? ` vs ${rate(theirs)}` : ""
+      ] })
+    ] }) });
+  }
   function Streak() {
     const stats2 = useValue($stats), run = liveStreak(stats2);
     if (run < 2) return null;
@@ -1691,6 +1727,14 @@ function create(ctx) {
           result.hints > 0 ? ` \xB7 ${result.hints} hint${result.hints === 1 ? "" : "s"} \xD7${result.hint.toFixed(2)}` : "",
           result.handicap ? ` \xB7 ${HANDICAP_NAMES[result.handicap].toLowerCase()} \xD7${result.odds.toFixed(2)}` : ""
         ] }),
+        result?.tps > 0 && /* @__PURE__ */ jsxs("div", { style: { ...S.muted, ...S.num }, "aria-label": "Pace", children: [
+          "You ",
+          rate(result.tps),
+          " t/s \xB7 ",
+          result.aps.toFixed(2),
+          " arrows/s",
+          result.agentTps ? ` \xB7 Hermes ${rate(result.agentTps)} t/s` : ""
+        ] }),
         task.busy ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsx(LevelPicker, { value: next }),
           /* @__PURE__ */ jsxs(Button, { onClick: () => deal(), children: [
@@ -1706,7 +1750,8 @@ function create(ctx) {
           fmt(result?.total ?? stats.points),
           " points \xB7 ",
           stats.boards,
-          " boards all-time"
+          " boards all-time",
+          stats.bestTps ? ` \xB7 best ${rate(stats.bestTps)} t/s` : ""
         ] })
       ] }) });
     }
@@ -1807,6 +1852,7 @@ function create(ctx) {
         ] }),
         /* @__PURE__ */ jsx(Lives, { lives: snap.lives ?? 3, max: snap.maxLives ?? 3 }),
         /* @__PURE__ */ jsx(Timer, { snap }),
+        /* @__PURE__ */ jsx(Pace, { snap }),
         /* @__PURE__ */ jsx(Streak, {}),
         /* @__PURE__ */ jsx("span", { style: { ...S.grow, display: "flex", justifyContent: "center" }, children: /* @__PURE__ */ jsx(AgentStatus, { boardLevel: snap.level || 0 }) }),
         /* @__PURE__ */ jsxs("span", { style: S.row, children: [

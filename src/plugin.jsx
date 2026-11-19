@@ -8,12 +8,12 @@ import {
   ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS, Switch, Tip, useValue
 } from '@hermes/plugin-sdk';
 import { Game } from './game.js';
-import { handicapFactor, livesFor, liveStreak, nextHintCost, settle } from './score.js';
+import { handicapFactor, livesFor, liveStreak, nextHintCost, pace, rate, settle } from './score.js';
 import { createSound } from './sound.js';
 import { boardSpec, dealBoard, handicap, HANDICAP_NAMES, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.6.0';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.7.0';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -56,13 +56,18 @@ function create(ctx) {
   $offer.set(stored('offer', true) !== false);
   $handicap.set(handicap(stored('handicap', 0)));
   const sound = createSound(() => $sound.get(), () => $volume.get());
+  // The agent's own rolling tokens per second for the chat in view, when the Desktop reports it.
+  // Read on our own clock, never subscribed: nothing of ours runs inside the host's writes.
+  const agentTps = () => { try { const v = Number(host.state.focusedUsage?.get?.()?.avg_tps); return v > 0 ? v : 0; } catch { return 0; } };
   const saveStats = next => { stats = next; store('stats', stats); $stats.set(stats); };
   // A board is over: bank the points, move the streak.
   const finish = won => {
     const s = game.snapshot();
     const { stats: next, result, lost } = settle(stats, { won, level: s.level, arrows: s.total, seconds: s.seconds, lives: s.lives, hints: s.hints, handicap: s.handicap });
+    const speed = pace({ dots: s.dots, arrows: s.cleared, seconds: s.seconds });
+    if (won && speed.tps > (next.bestTps || 0)) next.bestTps = speed.tps;
     saveStats(next);
-    $result.set(won ? { ...result, total: next.points } : { lostStreak: lost });
+    $result.set(won ? { ...result, total: next.points, ...speed, agentTps: agentTps() } : { lostStreak: lost });
   };
 
   const game = new Game({
@@ -219,6 +224,22 @@ function create(ctx) {
     return <span style={{ ...S.num, color: snap.started ? 'var(--ui-text-primary)' : 'var(--ui-text-quaternary)' }} aria-label="Board time">{clock(snap.started ? game.seconds : 0)}</span>;
   }
 
+  // The player's speed in the agent's unit: grid dots uncovered per second, as "tokens".
+  function Pace({ snap }) {
+    const [, tick] = useState(0);
+    const running = snap.status === 'play' && snap.started;
+    useEffect(() => { if (!running) return; const id = window.setInterval(() => tick(n => n + 1), 500); return () => window.clearInterval(id); }, [running]);
+    const { tps, aps } = pace({ dots: snap.dots, arrows: snap.cleared, seconds: snap.started ? game.seconds : 0 }), theirs = agentTps();
+    const label = `Your speed, counted the way your agent's is: every grid dot you uncover is a token. ${tps ? `${rate(tps)} dots a second, ${aps.toFixed(2)} arrows a second.` : 'It shows once you have played a couple of seconds.'}${theirs ? ` Hermes is averaging ${rate(theirs)} t/s in this chat.` : ''}`;
+    return (
+      <Tip label={label}>
+        <span style={{ ...S.num, color: tps ? 'var(--ui-text-primary)' : 'var(--ui-text-quaternary)' }} aria-label="Your pace">
+          {tps ? rate(tps) : '–'}<span style={S.muted}> t/s{theirs ? ` vs ${rate(theirs)}` : ''}</span>
+        </span>
+      </Tip>
+    );
+  }
+
   function Streak() {
     const stats = useValue($stats), run = liveStreak(stats);
     if (run < 2) return null;
@@ -283,11 +304,16 @@ function create(ctx) {
               L{snap.level} ×{result.difficulty.toFixed(2)} · time ×{result.time.toFixed(2)} · lives ×{result.life.toFixed(1)}{result.streak > 1 ? ` · streak ${result.streak} ×${result.run.toFixed(1)}` : ''}{result.hints > 0 ? ` · ${result.hints} hint${result.hints === 1 ? '' : 's'} ×${result.hint.toFixed(2)}` : ''}{result.handicap ? ` · ${HANDICAP_NAMES[result.handicap].toLowerCase()} ×${result.odds.toFixed(2)}` : ''}
             </div>
           )}
+          {result?.tps > 0 && (
+            <div style={{ ...S.muted, ...S.num }} aria-label="Pace">
+              You {rate(result.tps)} t/s · {result.aps.toFixed(2)} arrows/s{result.agentTps ? ` · Hermes ${rate(result.agentTps)} t/s` : ''}
+            </div>
+          )}
           {task.busy
             ? <><LevelPicker value={next} /><Button onClick={() => deal()}>Next board · L{next}{auto ? ` (${Math.max(1, Math.ceil((auto - Date.now()) / 1000))})` : ''}</Button>
 </>
             : <><LevelPicker value={freeLevel} /><Button onClick={() => deal(freeLevel)}>Play again</Button></>}
-          <div style={{ ...S.faint, ...S.num }}>{fmt(result?.total ?? stats.points)} points · {stats.boards} boards all-time</div>
+          <div style={{ ...S.faint, ...S.num }}>{fmt(result?.total ?? stats.points)} points · {stats.boards} boards all-time{stats.bestTps ? ` · best ${rate(stats.bestTps)} t/s` : ''}</div>
         </div></div>
       );
     }
@@ -372,6 +398,7 @@ function create(ctx) {
           <span style={{ ...S.num, fontWeight: 600 }}>{snap.left ?? 0}<span style={{ ...S.muted, fontWeight: 400 }}> left</span></span>
           <Lives lives={snap.lives ?? 3} max={snap.maxLives ?? 3} />
           <Timer snap={snap} />
+          <Pace snap={snap} />
           <Streak />
           <span style={{ ...S.grow, display: 'flex', justifyContent: 'center' }}><AgentStatus boardLevel={snap.level || 0} /></span>
           <span style={S.row}>

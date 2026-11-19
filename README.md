@@ -39,6 +39,10 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 - Hints cost points and each costs more than the last: 5%, 10%, 15%… of the board's points (5, 15, 30, 50, 75% in total), never below 20% of the board. The Hint button shows the next price.
 - A tap that lands on a blocked arrow within a quarter-cell or so of one that can leave goes to the one that can leave.
 
+## Pace
+
+The top bar shows your speed in your agent's unit. Every grid dot you uncover counts as a token, so `8.4 t/s` means 8.4 dots a second. When the Desktop reports the agent's own rolling tokens per second for the chat in view, it is shown beside yours (`8.4 t/s vs 62`). The cleared card adds arrows per second and your best t/s.
+
 ## Boards
 
 Every board is generated at random and is always solvable; there are no stored puzzles. The generator packs the silhouette, lays a few arrows one to two board lengths long, and builds bottlenecks: stretches where only one or two arrows can leave, usually because a long arrow is held by a small nest of short ones. Higher levels and harder handicaps make those stretches longer.

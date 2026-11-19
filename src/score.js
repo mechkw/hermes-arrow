@@ -42,6 +42,18 @@ export function score({ level = 1, arrows = 0, seconds = 0, lives = 0, streak = 
   return { points: Math.round(base * difficulty * time * life * run * hint * odds), base, difficulty, time, life, run, hint, hints, odds, handicap };
 }
 
+/**
+ * The player's working speed, in the agent's own unit. A grid dot uncovered counts as a token, so
+ * `tps` reads against the agent's tokens per second; `aps` is whole arrows per second. Nothing is
+ * reported for the first two seconds, when one quick tap would read as a huge rate.
+ */
+export function pace({ dots = 0, arrows = 0, seconds = 0 } = {}) {
+  if (!(seconds >= 2) || !dots) return { tps: 0, aps: 0 };
+  return { tps: dots / seconds, aps: arrows / seconds };
+}
+/** One decimal under 10, whole numbers above: 8.4, 62. */
+export const rate = v => (v >= 9.95 ? String(Math.round(v)) : v.toFixed(1));
+
 /** Fold a finished board into the saved stats. Returns new stats; a win also returns its score. */
 export function settle(stats, outcome, now = Date.now()) {
   const next = { boards: 0, arrows: 0, points: 0, best: 0, bestStreak: 0, ...stats, streak: liveStreak(stats, now), lastPlay: now };

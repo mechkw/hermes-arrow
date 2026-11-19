@@ -39,7 +39,7 @@ export class Game {
     const { w, h } = this.board;
     this.arrows = this.board.arrows.map(a => ({ id: a.id, cells: a.cells }));
     this.grid = makeGrid(w, h, this.arrows);
-    this.total = this.arrows.length; this.cleared = 0; this.mistakes = 0; this.moves = 0; this.hints = 0;
+    this.total = this.arrows.length; this.cleared = 0; this.dots = 0; this.mistakes = 0; this.moves = 0; this.hints = 0;
     this.lives = this.maxLives; this.status = 'play'; this.startedAt = 0; this.endedAt = 0; if (this.canvas) this.hiddenAt = 0;
     this.flying = []; this.hintId = -1; this.bumpUntil.clear();
     this.preview = null; this.lastTap = null; this.dropMiss();
@@ -53,7 +53,7 @@ export class Game {
   get seconds() { return this.startedAt ? ((this.endedAt || this.hiddenAt || Date.now()) - this.startedAt) / 1000 : 0; }
 
   snapshot() {
-    return { status: this.status, left: this.left, total: this.total, cleared: this.cleared, lives: this.lives, maxLives: this.maxLives, started: !!this.startedAt,
+    return { status: this.status, left: this.left, total: this.total, cleared: this.cleared, dots: this.dots || 0, lives: this.lives, maxLives: this.maxLives, started: !!this.startedAt,
       mistakes: this.mistakes, hints: this.hints || 0, seconds: this.seconds, level: this.meta?.level || 0, handicap: this.meta?.handicap || 0, mode: this.meta?.mode || 'free',
       zoomed: this.zoom > 1.01, w: this.board?.w || 0, h: this.board?.h || 0 };
   }
@@ -77,7 +77,7 @@ export class Game {
       for (const [x, y] of arrow.cells) this.grid[y * w + x] = -1;
       this.arrows = this.arrows.filter(a => a !== arrow);
       this.flying.push({ kind: 'exit', cells: arrow.cells, t0: now(), reach: this.exitReach(arrow.cells) });
-      this.cleared++;
+      this.cleared++; this.dots += arrow.cells.length;
       if (!this.arrows.length) { this.status = 'won'; this.endedAt = Date.now(); this.hintId = -1; }
       this.onEvent(this.status === 'won' ? 'won' : 'exit');
     } else {
