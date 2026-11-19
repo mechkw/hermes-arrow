@@ -1,6 +1,6 @@
 {
   "name": "hermes-arrow",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "description": "Arrow-escape puzzle for Hermes Desktop that scales with the task your agent is working on.",

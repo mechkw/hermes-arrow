@@ -183,10 +183,25 @@ try {
   assert.match((await speeds('[data-bar]')).join('|'), /^you \d+(\.\d)?t\/s icon\|agent 62t\/s icon$/, 'pace shows as t/s against the agent');
   await clear(page);
   await page.waitForTimeout(300);
-  assert.match((await speeds('[aria-label="Pace"]')).join('|'), /^you \d+(\.\d)?t\/s icon\|agent 62t\/s icon$/, 'the cleared card shows both rates');
-  assert.match(await page.locator('[aria-label="Pace"]').innerText(), /\d+\.\d\d arrows\/s/, 'and arrows per second');
+  assert.match((await speeds('[data-pace]')).join('|'), /^you \d+(\.\d)?t\/s icon\|agent 62t\/s icon$/, 'the cleared card shows both rates');
+  assert.doesNotMatch(await page.locator('[data-pace]').innerText(), /arrows/, 'arrows per second stays internal');
+  const sides = await page.locator('[data-pace] [data-speed]').evaluateAll(list => list.map(el => ({ role: el.getAttribute('role'), label: el.getAttribute('aria-label'), color: getComputedStyle(el).color, icon: el.querySelector('svg').innerHTML })));
+  assert.deepEqual(sides.map(s => s.role), ['img', 'img'], 'each rate is announced as one labelled thing');
+  assert.match(sides[0].label, /^You: \d+(\.\d)? tokens a second$/);
+  assert.equal(sides[1].label, 'Hermes: 62 tokens a second');
+  assert.notEqual(sides[0].color, sides[1].color, 'the two sides differ in colour');
+  assert.notEqual(sides[0].icon, sides[1].icon, 'and in icon');
+  assert.equal(sides[1].color, await page.locator('[aria-label="Board time"]').evaluate(el => getComputedStyle(el).color), 'the agent rate is in the normal text colour');
   await shot(page, '05b-pace');
+  // The agent slot stays in the bar when its rate goes away, and follows the app without a tap.
+  const left = () => page.locator('[data-bar] [data-speed="agent"]').evaluate(el => [el.getBoundingClientRect().left, el.innerText.replace(/\s+/g, '')]);
+  const withRate = await left();
+  await page.evaluate(() => window.agent.tps(0.03));
+  await page.waitForTimeout(1200);
+  assert.equal((await left())[1], '–t/s', 'a rate that would print as 0.0 shows as none, picked up while idle');
   await page.evaluate(() => window.agent.tps(0));
+  await page.waitForTimeout(1200);
+  assert.deepEqual(await left(), [withRate[0], '–t/s'], 'the slot keeps its place with no rate');
   await shot(page, '05-cleared-free');
   await page.locator('[aria-label="Higher level"]').first().click();
   s = await snap(page);

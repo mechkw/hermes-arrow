@@ -215,7 +215,7 @@ test('big boards are packed, knotted, and carry arrows longer than the board', (
 import { pace, rate } from '../src/score.js';
 
 test('pace reads dots as tokens per second', () => {
-  assert.deepEqual(pace({ dots: 84, arrows: 13, seconds: 10 }), { tps: 8.4, aps: 1.3 });
+  assert.deepEqual(pace({ dots: 84, arrows: 13, seconds: 10 }), { tps: 84, aps: 1.3 });
   assert.deepEqual(pace({ dots: 9, arrows: 1, seconds: 0.4 }), { tps: 0, aps: 0 }, 'nothing in the first two seconds');
   assert.deepEqual(pace({}), { tps: 0, aps: 0 });
   assert.deepEqual([8.44, 9.96, 62.3].map(rate), ['8.4', '10', '62']);
