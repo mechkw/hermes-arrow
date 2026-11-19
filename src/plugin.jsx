@@ -13,7 +13,7 @@ import { createSound } from './sound.js';
 import { boardSpec, dealBoard, handicap, HANDICAP_NAMES, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import { createTracker } from './tracker.js';
 
-const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.7.0';
+const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = '0.7.1';
 // Most see-through the modal goes, and its size.
 const MAX_FADE = 0.8, MODAL_W = 'min(94vw, 1100px)', MODAL_H = 'min(86vh, 860px)';
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -224,6 +224,21 @@ function create(ctx) {
     return <span style={{ ...S.num, color: snap.started ? 'var(--ui-text-primary)' : 'var(--ui-text-quaternary)' }} aria-label="Board time">{clock(snap.started ? game.seconds : 0)}</span>;
   }
 
+  // One side of the race: a person in the accent colour for the player, a robot in yellow for the agent.
+  const WHO = {
+    you: { color: 'var(--ui-accent)', label: 'You', icon: <><circle cx="8" cy="5" r="2.75" /><path d="M2.75 14c.4-3 2.5-4.5 5.25-4.5s4.85 1.5 5.25 4.5" /></> },
+    agent: { color: 'var(--ui-yellow)', label: 'Hermes', icon: <><rect x="2.75" y="5.5" width="10.5" height="7.75" rx="2" /><path d="M8 5.5V3" /><circle cx="8" cy="2.25" r="0.9" /><path d="M6 8.75v1.5M10 8.75v1.5M1 8.5v2.5M15 8.5v2.5" /></> }
+  };
+  function Speed({ who, value }) {
+    const { color, label, icon } = WHO[who];
+    return (
+      <span style={{ ...S.num, display: 'inline-flex', alignItems: 'center', gap: 4, color: value ? color : 'var(--ui-text-quaternary)', whiteSpace: 'nowrap' }} aria-label={`${label}: ${value ? `${rate(value)} tokens a second` : 'no pace yet'}`} data-speed={who}>
+        <svg width="1.2em" height="1.2em" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
+        <span style={{ fontWeight: 600 }}>{value ? rate(value) : '–'}</span><span style={{ opacity: 0.7 }}>t/s</span>
+      </span>
+    );
+  }
+
   // The player's speed in the agent's unit: grid dots uncovered per second, as "tokens".
   function Pace({ snap }) {
     const [, tick] = useState(0);
@@ -233,8 +248,9 @@ function create(ctx) {
     const label = `Your speed, counted the way your agent's is: every grid dot you uncover is a token. ${tps ? `${rate(tps)} dots a second, ${aps.toFixed(2)} arrows a second.` : 'It shows once you have played a couple of seconds.'}${theirs ? ` Hermes is averaging ${rate(theirs)} t/s in this chat.` : ''}`;
     return (
       <Tip label={label}>
-        <span style={{ ...S.num, color: tps ? 'var(--ui-text-primary)' : 'var(--ui-text-quaternary)' }} aria-label="Your pace">
-          {tps ? rate(tps) : '–'}<span style={S.muted}> t/s{theirs ? ` vs ${rate(theirs)}` : ''}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }} aria-label="Pace: you and your agent">
+          <Speed who="you" value={tps} />
+          {theirs > 0 && <Speed who="agent" value={theirs} />}
         </span>
       </Tip>
     );
@@ -305,8 +321,10 @@ function create(ctx) {
             </div>
           )}
           {result?.tps > 0 && (
-            <div style={{ ...S.muted, ...S.num }} aria-label="Pace">
-              You {rate(result.tps)} t/s · {result.aps.toFixed(2)} arrows/s{result.agentTps ? ` · Hermes ${rate(result.agentTps)} t/s` : ''}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: '0.9375rem' }} aria-label="Pace">
+              <Speed who="you" value={result.tps} />
+              {result.agentTps > 0 && <Speed who="agent" value={result.agentTps} />}
+              <span style={{ ...S.muted, ...S.num }}>{result.aps.toFixed(2)} arrows/s</span>
             </div>
           )}
           {task.busy

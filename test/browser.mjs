@@ -172,17 +172,20 @@ try {
   // Pace: the player's dots per second as "t/s", beside the agent's own rate when the app reports one.
   await page.evaluate(() => { const g = window.arrow.game; g.startedAt -= 20000; g.endedAt = g.startedAt + 20000; window.agent.tps(62.3); });
   await page.click('text=Play again');
-  assert.match(await page.locator('[aria-label="Your pace"]').first().innerText(), /^–\s*t\/s vs 62$/, 'no pace before play starts; the agent rate shows');
+  const speeds = sel => page.locator(`${sel} [data-speed]`).evaluateAll(list => list.map(el => `${el.dataset.speed} ${el.innerText.replace(/\s+/g, '')} ${el.querySelector('svg') ? 'icon' : ''}`));
+  assert.deepEqual(await speeds('[data-bar]'), ['you –t/s icon', 'agent 62t/s icon'], 'no pace before play starts; the agent rate shows, each behind its icon');
   const first = await target(page, true);
   await page.mouse.click(first.x, first.y);
   await page.evaluate(() => { window.arrow.game.startedAt -= 10000; });
   await page.waitForTimeout(700);
   const mid = await snap(page);
   assert.ok(mid.dots >= 2 && mid.cleared === 1, 'dots count the cells of cleared arrows');
-  assert.match(await page.locator('[aria-label="Your pace"]').first().innerText(), /^\d+(\.\d)? t\/s vs 62$/, 'pace shows as t/s against the agent');
+  assert.match((await speeds('[data-bar]')).join('|'), /^you \d+(\.\d)?t\/s icon\|agent 62t\/s icon$/, 'pace shows as t/s against the agent');
   await clear(page);
   await page.waitForTimeout(300);
-  assert.match(await page.locator('[aria-label="Pace"]').innerText(), /^You \d+(\.\d)? t\/s · \d+\.\d\d arrows\/s · Hermes 62 t\/s$/, 'the cleared card reports both measures');
+  assert.match((await speeds('[aria-label="Pace"]')).join('|'), /^you \d+(\.\d)?t\/s icon\|agent 62t\/s icon$/, 'the cleared card shows both rates');
+  assert.match(await page.locator('[aria-label="Pace"]').innerText(), /\d+\.\d\d arrows\/s/, 'and arrows per second');
+  await shot(page, '05b-pace');
   await page.evaluate(() => window.agent.tps(0));
   await shot(page, '05-cleared-free');
   await page.locator('[aria-label="Higher level"]').first().click();

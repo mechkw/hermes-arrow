@@ -41,7 +41,7 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 
 ## Pace
 
-The top bar shows your speed in your agent's unit. Every grid dot you uncover counts as a token, so `8.4 t/s` means 8.4 dots a second. When the Desktop reports the agent's own rolling tokens per second for the chat in view, it is shown beside yours (`8.4 t/s vs 62`). The cleared card adds arrows per second and your best t/s.
+The top bar shows your speed in your agent's unit. Every grid dot you uncover counts as a token, so `8.4 t/s` means 8.4 dots a second. When the Desktop reports the agent's own rolling tokens per second for the chat in view, it is shown beside yours: a person icon in the accent colour for you, a robot in yellow for the agent. The cleared card adds arrows per second and your best t/s.
 
 ## Boards
 

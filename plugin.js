@@ -1,4 +1,4 @@
-// Hermes Arrow 0.7.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.7.1 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { useEffect, useRef, useState } from "react";
@@ -1298,7 +1298,7 @@ function createTracker({
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var ID = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.7.0";
+var VERSION = "0.7.1";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -1602,6 +1602,26 @@ function create(ctx) {
     }, [running]);
     return /* @__PURE__ */ jsx("span", { style: { ...S.num, color: snap.started ? "var(--ui-text-primary)" : "var(--ui-text-quaternary)" }, "aria-label": "Board time", children: clock(snap.started ? game.seconds : 0) });
   }
+  const WHO = {
+    you: { color: "var(--ui-accent)", label: "You", icon: /* @__PURE__ */ jsxs(Fragment, { children: [
+      /* @__PURE__ */ jsx("circle", { cx: "8", cy: "5", r: "2.75" }),
+      /* @__PURE__ */ jsx("path", { d: "M2.75 14c.4-3 2.5-4.5 5.25-4.5s4.85 1.5 5.25 4.5" })
+    ] }) },
+    agent: { color: "var(--ui-yellow)", label: "Hermes", icon: /* @__PURE__ */ jsxs(Fragment, { children: [
+      /* @__PURE__ */ jsx("rect", { x: "2.75", y: "5.5", width: "10.5", height: "7.75", rx: "2" }),
+      /* @__PURE__ */ jsx("path", { d: "M8 5.5V3" }),
+      /* @__PURE__ */ jsx("circle", { cx: "8", cy: "2.25", r: "0.9" }),
+      /* @__PURE__ */ jsx("path", { d: "M6 8.75v1.5M10 8.75v1.5M1 8.5v2.5M15 8.5v2.5" })
+    ] }) }
+  };
+  function Speed({ who, value }) {
+    const { color, label, icon } = WHO[who];
+    return /* @__PURE__ */ jsxs("span", { style: { ...S.num, display: "inline-flex", alignItems: "center", gap: 4, color: value ? color : "var(--ui-text-quaternary)", whiteSpace: "nowrap" }, "aria-label": `${label}: ${value ? `${rate(value)} tokens a second` : "no pace yet"}`, "data-speed": who, children: [
+      /* @__PURE__ */ jsx("svg", { width: "1.2em", height: "1.2em", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: icon }),
+      /* @__PURE__ */ jsx("span", { style: { fontWeight: 600 }, children: value ? rate(value) : "\u2013" }),
+      /* @__PURE__ */ jsx("span", { style: { opacity: 0.7 }, children: "t/s" })
+    ] });
+  }
   function Pace({ snap }) {
     const [, tick] = useState(0);
     const running = snap.status === "play" && snap.started;
@@ -1612,12 +1632,9 @@ function create(ctx) {
     }, [running]);
     const { tps, aps } = pace({ dots: snap.dots, arrows: snap.cleared, seconds: snap.started ? game.seconds : 0 }), theirs = agentTps();
     const label = `Your speed, counted the way your agent's is: every grid dot you uncover is a token. ${tps ? `${rate(tps)} dots a second, ${aps.toFixed(2)} arrows a second.` : "It shows once you have played a couple of seconds."}${theirs ? ` Hermes is averaging ${rate(theirs)} t/s in this chat.` : ""}`;
-    return /* @__PURE__ */ jsx(Tip, { label, children: /* @__PURE__ */ jsxs("span", { style: { ...S.num, color: tps ? "var(--ui-text-primary)" : "var(--ui-text-quaternary)" }, "aria-label": "Your pace", children: [
-      tps ? rate(tps) : "\u2013",
-      /* @__PURE__ */ jsxs("span", { style: S.muted, children: [
-        " t/s",
-        theirs ? ` vs ${rate(theirs)}` : ""
-      ] })
+    return /* @__PURE__ */ jsx(Tip, { label, children: /* @__PURE__ */ jsxs("span", { style: { display: "inline-flex", alignItems: "center", gap: 10 }, "aria-label": "Pace: you and your agent", children: [
+      /* @__PURE__ */ jsx(Speed, { who: "you", value: tps }),
+      theirs > 0 && /* @__PURE__ */ jsx(Speed, { who: "agent", value: theirs })
     ] }) });
   }
   function Streak() {
@@ -1727,13 +1744,13 @@ function create(ctx) {
           result.hints > 0 ? ` \xB7 ${result.hints} hint${result.hints === 1 ? "" : "s"} \xD7${result.hint.toFixed(2)}` : "",
           result.handicap ? ` \xB7 ${HANDICAP_NAMES[result.handicap].toLowerCase()} \xD7${result.odds.toFixed(2)}` : ""
         ] }),
-        result?.tps > 0 && /* @__PURE__ */ jsxs("div", { style: { ...S.muted, ...S.num }, "aria-label": "Pace", children: [
-          "You ",
-          rate(result.tps),
-          " t/s \xB7 ",
-          result.aps.toFixed(2),
-          " arrows/s",
-          result.agentTps ? ` \xB7 Hermes ${rate(result.agentTps)} t/s` : ""
+        result?.tps > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 12, fontSize: "0.9375rem" }, "aria-label": "Pace", children: [
+          /* @__PURE__ */ jsx(Speed, { who: "you", value: result.tps }),
+          result.agentTps > 0 && /* @__PURE__ */ jsx(Speed, { who: "agent", value: result.agentTps }),
+          /* @__PURE__ */ jsxs("span", { style: { ...S.muted, ...S.num }, children: [
+            result.aps.toFixed(2),
+            " arrows/s"
+          ] })
         ] }),
         task.busy ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsx(LevelPicker, { value: next }),
