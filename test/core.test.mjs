@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generate, solve, makeGrid, probe, headDir, buildMask, SHAPE_NAMES } from '../src/core.js';
-import { LEVELS, level, boardSpec, estimateSeconds, levelForSeconds, levelForTask, heatSeconds } from '../src/difficulty.js';
+import { generate, solve, makeGrid, probe, headDir, buildMask, SHAPE_NAMES } from '../src/cartridges/arrow/core.js';
+import { LEVELS, level, boardSpec, levelForSeconds, levelForTask } from '../src/cartridges/arrow/difficulty.js';
+import { estimateSeconds, heatSeconds, workSeconds } from '../src/console/effort.js';
 
 function check(board) {
   const { w, h, arrows } = board, seen = new Set();
@@ -72,7 +73,7 @@ test('harder prompts and longer runs pick higher levels', () => {
   assert.equal(levelForSeconds(1e6), LEVELS.length);
   const early = { estimate: 20, elapsed: 5, tools: 0, subagents: 0 }, late = { estimate: 20, elapsed: 400, tools: 30, subagents: 2 };
   assert.ok(heatSeconds(late) > heatSeconds(early));
-  assert.ok(levelForTask(late) > levelForTask(early));
+  assert.ok(levelForTask({ seconds: workSeconds(late) }) > levelForTask({ seconds: workSeconds(early) }));
 });
 
 test('generation is fast enough to run on the UI thread', () => {
@@ -82,7 +83,7 @@ test('generation is fast enough to run on the UI thread', () => {
   assert.ok(ms < 1500, `largest board built in ${ms.toFixed(0)} ms`);
 });
 
-import { livesFor, liveStreak, score, settle, STREAK_IDLE_MS, hintFactor, nextHintCost } from '../src/score.js';
+import { livesFor, liveStreak, score, settle, STREAK_IDLE_MS, hintFactor, nextHintCost } from '../src/cartridges/arrow/score.js';
 
 test('lives run from 2 to 5 with difficulty', () => {
   assert.deepEqual(LEVELS.map(l => livesFor(l.n)), [2, 2, 3, 3, 4, 4, 5]);
@@ -132,7 +133,7 @@ test('hints cost points, and each one costs more than the last', () => {
 });
 
 import { atom, computed } from 'nanostores';
-import { createTracker } from '../src/tracker.js';
+import { createTracker } from '../src/console/tracker.js';
 
 test('the tracker never throws into the host or runs on its stack', async () => {
   // The app derives busy from its session store and writes that store inside its send path.
@@ -174,9 +175,9 @@ test('the tracker stays quiet while a turn streams', async () => {
   tracker.dispose();
 });
 
-import { profile } from '../src/core.js';
-import { dealBoard, HANDICAPS } from '../src/difficulty.js';
-import { handicapFactor } from '../src/score.js';
+import { profile } from '../src/cartridges/arrow/core.js';
+import { dealBoard, HANDICAPS } from '../src/cartridges/arrow/difficulty.js';
+import { handicapFactor } from '../src/cartridges/arrow/score.js';
 
 test('the handicap makes a level harder or easier without resizing it', () => {
   for (const n of [3, 5, 7]) {
@@ -212,11 +213,37 @@ test('big boards are packed, knotted, and carry arrows longer than the board', (
   }
 });
 
-import { pace, rate } from '../src/score.js';
+import { pace } from '../src/cartridges/arrow/score.js';
+import { rate } from '../src/console/kit-format.js';
 
 test('pace reads dots as tokens per second', () => {
   assert.deepEqual(pace({ dots: 84, arrows: 13, seconds: 10 }), { tps: 84, aps: 1.3 });
   assert.deepEqual(pace({ dots: 9, arrows: 1, seconds: 0.4 }), { tps: 0, aps: 0 }, 'nothing in the first two seconds');
   assert.deepEqual(pace({}), { tps: 0, aps: 0 });
   assert.deepEqual([8.44, 9.96, 62.3].map(rate), ['8.4', '10', '62']);
+});
+
+import { insert, refusal, slot, watch } from '../src/console/slot.js';
+
+test('the cartridge slot takes games in and out, in any order', () => {
+  delete globalThis.__hermesCartridges;
+  const cart = { contract: 1, id: 'tap', name: 'Tap', create() {} };
+  // A cartridge that loads before the console creates the slot itself, as the guide's snippet does.
+  const early = (globalThis.__hermesCartridges ||= {});
+  early.list = [cart];
+  let calls = 0;
+  const stop = watch(() => calls++);
+  assert.deepEqual(slot().list, [cart], 'the console finds a cartridge that was there first');
+  const newer = { ...cart, version: '2' }, remove = insert(newer);
+  assert.deepEqual([slot().list, calls], [[newer], 1], 'the same id replaces, and the console is told');
+  remove();
+  assert.deepEqual([slot().list, calls], [[], 2]);
+  stop();
+  insert(cart)();
+  assert.equal(calls, 2, 'a stopped watcher hears nothing');
+  assert.equal(refusal(cart), '');
+  assert.match(refusal({ ...cart, contract: 2 }), /contract 2/);
+  assert.match(refusal({ ...cart, id: 'Bad Id' }), /id must be/);
+  assert.match(refusal({ ...cart, create: null }), /create/);
+  assert.match(refusal(null), /not an object/);
 });

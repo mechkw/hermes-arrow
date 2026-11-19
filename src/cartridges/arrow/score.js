@@ -54,9 +54,6 @@ export function pace({ dots = 0, arrows = 0, seconds = 0 } = {}) {
   if (!(seconds >= 2) || !dots) return { tps: 0, aps: 0 };
   return { tps: dots * TOKENS_PER_DOT / seconds, aps: arrows / seconds };
 }
-/** One decimal under 10, whole numbers above: 8.4, 62. */
-export const rate = v => (v >= 9.95 ? String(Math.round(v)) : v.toFixed(1));
-
 /** Fold a finished board into the saved stats. Returns new stats; a win also returns its score. */
 export function settle(stats, outcome, now = Date.now()) {
   const next = { boards: 0, arrows: 0, points: 0, best: 0, bestStreak: 0, ...stats, streak: liveStreak(stats, now), lastPlay: now };

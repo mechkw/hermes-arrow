@@ -43,6 +43,12 @@ The prompt is read on your machine by a pass-through composer hook, used for tha
 
 The top bar shows your speed in your agent's unit. Every grid dot you uncover counts as ten tokens, so `84 t/s` means 8.4 dots a second. Beside it is the agent's own rolling tokens per second for the chat in view, when the Desktop reports it: a brain icon in the accent colour for you, a robot in the normal text colour for the agent. The cleared card repeats both and the all-time line keeps your best t/s.
 
+## Games are cartridges
+
+The plugin is a console with games plugged into it. Arrow is built in. Any other game is a cartridge: a small Desktop plugin of its own, dropped into `desktop-plugins/`, that shows up under ⚙ → Games where each game can be switched on or off and chosen to play. A cartridge owns its rules, scoring, clock, pace and stats, and builds its bar from the console's parts so every game looks the same.
+
+[docs/CARTRIDGES.md](docs/CARTRIDGES.md) is the guide for writing one, and [`examples/hello-cartridge`](examples/hello-cartridge/plugin.js) is a complete game in about 120 lines.
+
 ## Boards
 
 Every board is generated at random and is always solvable; there are no stored puzzles. The generator packs the silhouette, lays a few arrows one to two board lengths long, and builds bottlenecks: stretches where only one or two arrows can leave, usually because a long arrow is held by a small nest of short ones. Higher levels and harder handicaps make those stretches longer.
@@ -53,7 +59,7 @@ Every board is generated at random and is always solvable; there are no stored p
 - The clock starts on the first arrow you tap.
 - A cleared board scores 10 per arrow, multiplied by difficulty (+25% per level), time (par is 2 s per arrow, from ×0.5 to ×2), lives kept (+10% each) and streak (+10% per consecutive win, up to +100%).
 - The streak ends when a board jams, or after 36 hours without playing.
-- Sounds for every part of the game, all replayed from six short clips in `assets/sfx` at different pitches and lengths: arrow leaves (climbs a scale while you keep clearing quickly), blocked, last-life warning, jam, win, streak milestone, new board, hint, preview clear / blocked, zoom, and a bell when the agent finishes. The clips are inlined into `plugin.js` as base64; a small synth stands in if they cannot decode. Re-voice the game in the `CUES` table in `src/sound.js`.
+- Sounds for every part of the game, all replayed from six short clips in `assets/sfx` at different pitches and lengths: arrow leaves (climbs a scale while you keep clearing quickly), blocked, last-life warning, jam, win, streak milestone, new board, hint, preview clear / blocked, zoom, and a bell when the agent finishes. The clips are inlined into `plugin.js` as base64; a small synth stands in if they cannot decode. Re-voice the game in `src/cartridges/arrow/voice.js`.
 
 ## Install
 
@@ -68,4 +74,9 @@ npm run dev              # builds plugin.js and the browser harness in dev/
 npm run test:browser     # plays the built plugin in Chromium, screenshots in test/out
 ```
 
-`src/core.js` builds boards in reverse leaving order, so every board is solvable by construction. `src/difficulty.js` is the task-to-level model. `src/game.js` is rules, canvas and input with no host imports. `src/tracker.js` watches agent turns. `src/plugin.jsx` is the Hermes glue. `plugin.js` is the built file the app loads.
+The source is in two halves:
+
+- `src/console/` is everything a game does not own: `tracker.js` watches agent turns, `effort.js` turns a turn into seconds of work, `audio.js` is the sound engine, `kit.jsx` is the bar, card and settings parts, `slot.js` is where dropped-in games arrive, and `console.jsx` frames the page, modal, settings and games menu.
+- `src/cartridges/arrow/` is the game: `core.js` builds boards in reverse leaving order, so every board is solvable by construction; `difficulty.js` maps work to a level; `game.js` is rules, canvas and input; `score.js` is points and pace; `voice.js` is its sounds; `index.jsx` puts them together as a cartridge.
+
+`src/plugin.jsx` plugs the console into the Desktop, and `plugin.js` is the built file the app loads.

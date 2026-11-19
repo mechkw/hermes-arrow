@@ -2,6 +2,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
+import example from '../examples/hello-cartridge/plugin.js';
 import { host, events, emit, useValue, atom, $sessionStates, $usage } from '@hermes/plugin-sdk';
 
 const contributions = [], disposers = [], memory = new Map();
@@ -17,9 +18,15 @@ const ctx = {
   storage: { get: (k, d) => (memory.has(k) ? memory.get(k) : d), set: (k, v) => memory.set(k, v), remove: k => memory.delete(k) }
 };
 globalThis.__hermesArrowDebug = app => { window.arrow = app; };
+window.store = memory;
+// `?cart` drops the example cartridge in after the console has loaded, `?cart=first` before it.
+const wantCart = new URLSearchParams(window.location.search).get('cart');
+const cartCtx = () => { const off = []; window.cartridge = { remove() { off.splice(0).forEach(fn => fn()); } }; return { onDispose: fn => off.push(fn) }; };
+if (wantCart === 'first') example.register(cartCtx());
 // `?busy` loads the plugin while a turn is already running, as happens when the Desktop reloads plugins mid-task.
 if (window.location.search.includes('busy')) $sessionStates.set({ s0: { busy: true } });
 plugin.register(ctx);
+if (wantCart !== null && wantCart !== 'first') example.register(cartCtx());
 
 const find = area => contributions.filter(c => c.area === area);
 // The fake agent. `send` runs the composer middleware exactly as the app would before a turn starts.

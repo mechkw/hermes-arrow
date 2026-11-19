@@ -6,10 +6,11 @@
 // on the host's stack: every callback is deferred to a microtask and wrapped, and an error is
 // handed to `onError` instead of thrown.
 //
-//   $task  what the agent is doing now, refreshed every second while it works
+//   $task  what the agent is doing now, refreshed every second while it works. `seconds` is the
+//          work it amounts to (effort.js); games size their boards from it.
 //   $done  the turn that most recently finished, until the next one starts
 
-import { estimateSeconds, levelForTask } from './difficulty.js';
+import { estimateSeconds, workSeconds } from './effort.js';
 
 const HISTORY = 40;
 
@@ -30,7 +31,7 @@ export function createTracker({ atom, busyBySession, onEvent, storage, setInterv
     if (!first) { if ($task.get().busy) $task.set({ busy: false }); return; }
     const view = { busy: true, count: tasks.size, start: first.start, elapsed: (now() - first.start) / 1000,
       tools: first.tools, subagents: first.subagents, estimate: first.estimate };
-    view.level = levelForTask(view);
+    view.seconds = workSeconds(view);
     $task.set(view);
   };
 

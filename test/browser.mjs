@@ -212,7 +212,7 @@ try {
   await page.evaluate(() => { window.location.hash = '/'; });
   await page.waitForSelector('text=Fake chat');
   await page.evaluate(() => window.agent.send('Audit the entire repo, refactor auth and write tests for every endpoint. Be thorough.'));
-  const heavy = await page.evaluate(() => window.arrow.tracker.$task.get());
+  const heavy = await page.evaluate(() => window.arrow.task());
   assert.ok(heavy.busy && heavy.level >= 4, `a heavy prompt starts high (L${heavy.level}, est ${heavy.estimate}s)`);
   await page.waitForSelector('text=/Play · L\\d/', { timeout: 8000 });
   await shot(page, '06-chip');
@@ -222,7 +222,7 @@ try {
   assert.equal(s.level, heavy.level, 'the board matches the task level');
   for (let i = 0; i < 40; i++) await page.evaluate(() => window.agent.tool());
   await page.waitForSelector('text=40 tools');
-  const hot = await page.evaluate(() => window.arrow.tracker.$task.get());
+  const hot = await page.evaluate(() => window.arrow.task());
   assert.ok(hot.level > heavy.level, `tool calls raise the level (L${heavy.level} → L${hot.level})`);
   await page.waitForSelector('text=/next L\\d/');
   await shot(page, '07-task-board');
@@ -247,7 +247,7 @@ try {
 
   // --- A trivial task gets a trivial board ----------------------------------------------------
   await page.evaluate(() => window.agent.send('thanks', 's2'));
-  const light = await page.evaluate(() => window.arrow.tracker.$task.get());
+  const light = await page.evaluate(() => window.arrow.task());
   assert.equal(light.level, 1, 'a throwaway message is level 1');
   await page.evaluate(() => window.agent.finish('s2'));
   await page.close();
@@ -454,6 +454,84 @@ try {
   await page.click('a:has-text("Arrow")');
   await page.waitForFunction(() => window.arrow?.game.status === 'play', null, { timeout: 5000 });
   assert.equal((await snap(page)).mode, 'task', 'loading mid-task deals a task board');
+  await page.close();
+
+  // --- Cartridges: a game dropped in as its own plugin ----------------------------------------
+  page = await open({ width: 1180, height: 760 });
+  await page.click('a:has-text("Arrow")');
+  await page.waitForFunction(() => window.arrow?.game.status === 'play');
+  await page.click('[aria-label="Settings"]');
+  assert.equal(await page.locator('[aria-label="Games"]').count(), 0, 'with one game there is no games menu');
+  await page.close();
+
+  for (const query of ['?cart', '?cart=first']) {
+    page = await open({ width: 1180, height: 760 }, undefined, query);
+    await page.click('a:has-text("Arrow")');
+    await page.waitForFunction(() => window.arrow?.game.status === 'play');
+    await page.waitForFunction(() => window.arrow.$carts.get().length === 2);
+    assert.deepEqual(await page.evaluate(() => [window.arrow.$carts.get().map(c => c.id), window.arrow.$active.get()]), [['arrow', 'tap'], 'arrow'], `${query || 'default'}: both games on hand, Arrow in play`);
+    await page.close();
+  }
+
+  page = await open({ width: 1180, height: 760 }, undefined, '?cart');
+  await page.click('a:has-text("Arrow")');
+  await page.waitForFunction(() => window.arrow?.game.status === 'play');
+  const mine = await target(page, true);
+  await page.mouse.click(mine.x, mine.y);
+  const midBoard = await snap(page);
+  await page.click('[aria-label="Settings"]');
+  assert.deepEqual(await page.locator('[aria-label="Games"] [data-cartridge]').evaluateAll(list => list.map(el => el.dataset.cartridge)), ['arrow', 'tap'], 'the menu lists both');
+  await shot(page, '18-games-menu');
+  await page.click('[aria-label="Play Tap"]');
+  await page.waitForSelector('[data-game="tap"] [data-grid]');
+  assert.equal(await page.locator('[aria-label="Difficulty handicap"]').count(), 0, 'Arrow\'s settings leave with it');
+  await page.click('[aria-label="Settings"]');
+  assert.match(await page.locator('[data-bar]').innerText(), /L1[\s\S]*8 to go[\s\S]*0 missed/, 'the bar is the cartridge\'s own parts');
+  assert.deepEqual(await page.locator('[data-bar] [data-speed]').evaluateAll(list => list.map(el => el.dataset.speed)), ['you', 'agent'], 'built from the same kit');
+  await shot(page, '19-tap-cartridge');
+  await page.locator('[data-grid] button:not([data-lit])').first().dispatchEvent('pointerdown');
+  for (let i = 0; i < 8; i++) await page.locator('[data-lit]').dispatchEvent('pointerdown');
+  await page.waitForSelector('[role="dialog"][aria-label="Board cleared"]');
+  assert.match(await page.locator('[role="dialog"][aria-label="Board cleared"]').innerText(), /8 hits · 0:0\d · 1 missed/, 'its own scoring and clock');
+  const kept = await page.evaluate(() => [window.store.get('cart.tap.stats'), window.store.get('stats')?.boards || 0, window.store.get('game')]);
+  assert.deepEqual([kept[0].boards, kept[1], kept[2]], [1, 0, 'tap'], 'its stats are stored apart from Arrow\'s, and the choice of game is remembered');
+  assert.ok((await played(page)).includes('win'), 'its sounds play through the console');
+  await shot(page, '20-tap-cleared');
+  // A turn starting reaches the game in play, and the invitation is that game's.
+  await page.evaluate(() => { window.location.hash = '/'; });
+  await page.waitForSelector('text=Fake chat');
+  assert.deepEqual(await page.locator('[data-pill]').allInnerTexts(), [], 'no offer while idle');
+  await page.evaluate(() => window.agent.send('Audit the entire repo, refactor auth and write tests for every endpoint. Be thorough.'));
+  await page.waitForSelector('[data-pill]');
+  assert.deepEqual(await page.locator('[data-pill]').allInnerTexts(), ['Play Tap'], 'the composer offers the game in play');
+  await page.click('[data-pill]');
+  await page.waitForSelector('[data-hermes-arrow-modal] [data-grid="5"]');
+  await page.evaluate(() => window.agent.finish());
+  // Switching the game in play off falls back to Arrow, whose board was left as it was.
+  await page.click('[aria-label="Settings"]');
+  await page.click('[aria-label="Tap on"]');
+  await page.waitForSelector('[data-game="arrow"]');
+  assert.deepEqual(await page.evaluate(() => [window.arrow.$active.get(), window.arrow.game.snapshot().cleared]), ['arrow', midBoard.cleared], 'back on Arrow, mid-board');
+  await page.click('[aria-label="Arrow on"]');
+  assert.deepEqual(await page.evaluate(() => window.arrow.$off.get()), { tap: true }, 'the last game cannot be switched off');
+  await page.click('[aria-label="Tap on"]');
+  // A cartridge that throws is contained: reported, shown as failed, and the rest keeps working.
+  await page.evaluate(() => {
+    const slot = globalThis.__hermesCartridges;
+    slot.list = slot.list.concat({ contract: 1, id: 'boom', name: 'Boom', create() { throw new Error('no cartridge inside'); } }, { contract: 99, id: 'future', name: 'Future', create() {} });
+    slot.listeners.forEach(fn => fn());
+  });
+  await page.waitForSelector('[data-cartridge="boom"]');
+  assert.equal(await page.locator('[data-cartridge="future"]').count(), 0, 'a cartridge for another contract is refused');
+  await page.click('[aria-label="Play Boom"]');
+  await page.waitForSelector('text=Boom did not start');
+  await page.click('[aria-label="Play Arrow"]');
+  await page.waitForFunction(() => !!window.arrow.game.canvas);
+  // Pulling a cartridge out removes it from the menu.
+  await page.evaluate(() => { const slot = globalThis.__hermesCartridges; slot.list = slot.list.filter(c => c.id !== 'boom'); window.cartridge.remove(); });
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 1);
+  assert.equal(await page.locator('[aria-label="Games"]').count(), 0);
+  errors.splice(0, errors.length, ...errors.filter(e => !/no cartridge inside|was refused/.test(e)));
   await page.close();
 
   assert.deepEqual(errors, [], 'no page errors');
