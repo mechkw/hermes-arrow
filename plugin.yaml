@@ -1,0 +1,7 @@
+name: hermes-arrow
+version: 0.9.1
+description: "Games for the wait: an arrow-escape puzzle in Hermes Desktop whose boards grow with how long and hard your agent is working. Other games plug in as cartridges."
+author: mechkw
+license: MIT
+homepage: https://github.com/mechkw/hermes-arrow
+tags: [desktop, game, puzzle]

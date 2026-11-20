@@ -45,13 +45,21 @@ The top bar shows your speed in your agent's unit. Every grid dot you uncover co
 
 ## Games are cartridges
 
-The plugin is a console with games plugged into it. Arrow is bundled. Any other game is a cartridge: a folder with a `cartridge.json`, a script and a cover image, dropped into the cartridges folder (the plugin's data folder, outside the plugin itself). The console finds it on its own.
+The plugin is a console with games plugged into it. Arrow is bundled. Any other game is a cartridge: a small Desktop plugin of its own, in its own folder beside this one, that hands itself to the console when the Desktop loads it. The console never loads code itself, which keeps it inside the Desktop plugin SDK and the plugin catalog's rules.
 
-⚙ → **Library** lists every game with its cover, title, folder, description, a Bundled or Custom chip and an on/off switch, and says why a folder could not be loaded. Games that are switched off stay out of the way; the settings panel only offers the ones that are on.
+⚙ → **Library** lists every game with its cover, title, id, description, a Bundled or Custom chip and an on/off switch, and says why anything could not be loaded. Games that are switched off stay out of the way; the settings panel only offers the ones that are on. The switches are kept in a `catalog.json` that a person or an agent can edit.
 
 A cartridge owns its rules, scoring, clock, pace and stats, and builds its bar from the console's parts so every game looks the same. To change a bundled game, fork it (`npm run cartridge -- fork arrow my-arrow`, then `build`) and switch the original off rather than editing it.
 
-[`skill/hermes-arrow-games`](skill/hermes-arrow-games/SKILL.md) is an agent skill for all of this: writing a game, forking one, and managing the catalog, with the rules for what an agent should leave alone. Copy that folder into your agent's skills directory (for Hermes, `~/.hermes/skills/gaming/`). It contains the [cartridge guide](skill/hermes-arrow-games/references/cartridge-guide.md) and a [complete example game](skill/hermes-arrow-games/templates/hello-cartridge/cartridge.js).
+The package bundles an agent skill, [`hermes-arrow:hermes-arrow-games`](skills/hermes-arrow-games/SKILL.md), for all of this: writing a game, forking one, managing the catalog, and the rules for what an agent should leave alone. It contains the [cartridge guide](skills/hermes-arrow-games/references/cartridge-guide.md) and a [complete example game](skills/hermes-arrow-games/templates/hello-cartridge/plugin.js).
+
+## What it reads and stores
+
+- **Your outgoing prompt, locally.** A composer middleware reads the text of each message you send to estimate how long the agent will work. The draft passes through unchanged; the text is not stored and nothing leaves your machine.
+- **The agent's busy state and token rate**, from the Desktop's own state, to time turns and show the pace readout.
+- **Stored in the plugin's own storage:** the last 40 turn durations, your game stats and settings.
+- **One file:** `catalog.json` (and a `README.txt`) in the plugin's data folder, through the Desktop's `ctx.files` door.
+- **No network calls, no telemetry, no shell commands, no credentials.** It imports only the plugin SDK and React, loads no other code and never updates itself.
 
 ## Boards
 
@@ -67,20 +75,24 @@ Every board is generated at random and is always solvable; there are no stored p
 
 ## Install
 
-Copy `plugin.js` to `<hermes home>/desktop-plugins/hermes-arrow/plugin.js` on the machine that runs Hermes Desktop, then run **Reload desktop plugins** from ⌘K. It is a desktop-only plugin: no backend half, nothing to restart.
+The repository is a Hermes plugin package (`plugin.yaml`, `desktop/plugin.js`, and an `__init__.py` whose only job is to register the bundled skill), so `hermes plugins install mechkw/hermes-arrow` installs both halves; enable it, then switch on its Desktop half under Capabilities → Plugins.
+
+For the game alone, copy `desktop/plugin.js` to `<hermes home>/desktop-plugins/hermes-arrow/plugin.js` on the machine that runs Hermes Desktop and run **Reload desktop plugins** from ⌘K. Nothing to restart.
+
+`hermes plugins validate .` is the check the plugin catalog's CI runs; it passes, and `npm test` repeats its Desktop rules on every run.
 
 ## Develop
 
 ```sh
 npm install
 npm test                 # board generator and difficulty model
-npm run dev              # builds plugin.js and the browser harness in dev/
+npm run dev              # builds desktop/plugin.js and the browser harness in dev/
 npm run test:browser     # plays the built plugin in Chromium, screenshots in test/out
 ```
 
 The source is in two halves:
 
-- `src/console/` is everything a game does not own: `tracker.js` watches agent turns, `effort.js` turns a turn into seconds of work, `audio.js` is the sound engine, `kit.jsx` is the bar, card and settings parts, `library.js` reads the cartridges folder, and `console.jsx` frames the page, modal, settings and Library.
+- `src/console/` is everything a game does not own: `tracker.js` watches agent turns, `effort.js` turns a turn into seconds of work, `audio.js` is the sound engine, `kit.jsx` is the bar, card and settings parts, `catalog.js` is the slot games arrive through and the catalog file, and `console.jsx` frames the page, modal, settings and Library.
 - `src/cartridges/arrow/` is the game: `core.js` builds boards in reverse leaving order, so every board is solvable by construction; `difficulty.js` maps work to a level; `game.js` is rules, canvas and input; `score.js` is points and pace; `voice.js` is its sounds; `index.jsx` puts them together as a cartridge.
 
-`src/plugin.jsx` plugs the console into the Desktop, and `plugin.js` is the built file the app loads.
+`src/plugin.jsx` plugs the console into the Desktop, and `desktop/plugin.js` is the built file the app loads.

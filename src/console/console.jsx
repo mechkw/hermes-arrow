@@ -1,11 +1,9 @@
 // The console: everything a game does not own. It watches the agent, offers a game while it works,
 // frames the page and the over-the-chat modal, keeps sound and settings, and keeps the library of
-// games. The game in play is a cartridge: bundled (src/cartridges) or a folder in the cartridges
-// folder (library.js). The console draws its bar, stage and settings inside its own frame and never
-// looks inside it.
+// games. The game in play is a cartridge: bundled (src/cartridges) or a Desktop plugin of its own
+// that hands itself over through the slot (catalog.js). The console draws a game's bar, stage and
+// settings inside its own frame and never looks inside it, and it never loads code itself.
 
-import * as React from 'react';
-import * as ReactJsx from 'react/jsx-runtime';
 import { Component, useEffect, useRef, useState } from 'react';
 import {
   atom, Button, Dialog, DialogContent, DialogTitle, haptic, host, Popover, PopoverContent, PopoverTrigger, Switch, Tip, useValue
@@ -14,7 +12,7 @@ import ding from '../../assets/sfx/ding.mp3';
 import tick from '../../assets/sfx/tick.mp3';
 import { createAudio } from './audio.js';
 import { clock, kit, S } from './kit.jsx';
-import { CATALOG, CONTRACT, exportNames, GUIDE, GUIDE_TEXT, load, scan, shimSource, writeCatalog } from './library.js';
+import { admit, CATALOG, CONTRACT, GUIDE, GUIDE_TEXT, readCatalog, slot, watch, writeCatalog } from './catalog.js';
 import { createTracker } from './tracker.js';
 
 export const ID = 'hermes-arrow', ROUTE = '/hermes-arrow', VERSION = __VERSION__;
@@ -36,8 +34,8 @@ const CHIME = {
 export function createConsole(ctx, builtin) {
   const $sound = atom(true), $volume = atom(0.7), $modal = atom(false), $fade = atom(0), $offer = atom(true);
   // $carts: games ready to play. $rows: every game the Library lists, loaded or not. $off: ids
-  // switched off. $active: the one in play. $shelf: the state of the cartridges folder.
-  const $carts = atom([]), $rows = atom([]), $off = atom({}), $active = atom(''), $library = atom(false), $covers = atom({}), $shelf = atom({ available: false, scanned: false });
+  // switched off. $active: the one in play. $shelf: whether the catalog file could be read.
+  const $carts = atom([]), $rows = atom([]), $off = atom({}), $active = atom(''), $library = atom(false), $shelf = atom({ file: false, read: false });
   const stored = (key, fallback) => { try { const v = ctx.storage.get(key, fallback); return v == null ? fallback : v; } catch { return fallback; } };
   const store = (key, value) => { try { ctx.storage.set(key, value); } catch { /* storage is best-effort */ } };
   let returnTo = '/';
@@ -61,15 +59,13 @@ export function createConsole(ctx, builtin) {
 
   // ---- games --------------------------------------------------------------------------------
 
-  const files = ctx.files?.list ? ctx.files : null;
-  const bundled = builtin.map(b => ({ id: b.dir, dir: b.dir, bundled: true, name: b.module.title, description: b.module.description || '', version: b.module.version || '', glyph: b.module.glyph || '', create: b.module.create }));
+  const files = ctx.files?.readText && ctx.files?.writeText ? ctx.files : null;
+  const bundled = builtin.map(b => ({ id: b.dir, bundled: true, title: b.module.title, description: b.module.description || '', version: b.module.version || '', glyph: b.module.glyph || '', cover: b.cover || '', create: b.module.create }));
   const taken = new Set(bundled.map(c => c.id)), prefixes = new Map(builtin.map(b => [b.dir, b.prefix]));
   const instances = new Map(); // id -> { cart, game }
-  const loaded = new Map();    // dir -> { mtimeMs, cart } custom games whose script is imported
-  const failed = new Map();    // dir -> { mtimeMs, error } so a broken script is tried once per save
+  const admitted = new Map();  // what a game handed over -> the checked cartridge, so one object is one game
   const find = id => $carts.get().find(c => c.id === id);
   const playable = () => $carts.get().filter(c => !$off.get()[c.id]);
-  $covers.set(Object.fromEntries(builtin.filter(b => b.cover).map(b => [b.dir, b.cover])));
   if (!files) $off.set({ ...(stored('gamesOff', {}) || {}) });
 
   /** What a cartridge is handed. The cartridge guide is the reference for every member. */
@@ -91,7 +87,7 @@ export function createConsole(ctx, builtin) {
   // A game that will not start still gets its place, so the player can see why and leave it.
   const broken = (cart, error) => ({
     Bar: () => null,
-    Stage: () => <kit.Card label="Game failed to start" tone="red"><kit.Headline color="red">{cart.name} did not start</kit.Headline><kit.Line>{String(error?.message || error)}</kit.Line></kit.Card>
+    Stage: () => <kit.Card label="Game failed to start" tone="red"><kit.Headline color="red">{cart.title} did not start</kit.Headline><kit.Line>{String(error?.message || error)}</kit.Line></kit.Card>
   });
   /** The running game for a cartridge id, started on first use. */
   const use = id => {
@@ -113,85 +109,48 @@ export function createConsole(ctx, builtin) {
   };
   const retire = id => { const held = instances.get(id); instances.delete(id); try { held?.game.dispose?.(); } catch (error) { report(`${id}.dispose`, error); } };
 
-  // A cartridge's script imports React from these: small modules that hand back the console's own copy.
-  let urls = null;
-  const deps = () => {
-    if (!urls) {
-      globalThis.__hermesArrowReact = React; globalThis.__hermesArrowJsx = ReactJsx;
-      const blob = source => URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-      urls = { react: blob(shimSource('__hermesArrowReact', exportNames(React))), 'react/jsx-runtime': blob(shimSource('__hermesArrowJsx', exportNames(ReactJsx))) };
-    }
-    return urls;
-  };
-
   // Which game is in play: the player's pick this session, else the one remembered, else the first that is on.
   let picked = false;
   const settle = () => {
     const ok = playable(), now = $active.get(), want = picked ? now : stored('game', '') || now;
     $active.set((ok.find(c => c.id === want) || ok.find(c => c.id === now) || ok[0] || $carts.get()[0])?.id || '');
   };
-  /** Publish what the folder holds: the rows the Library lists and the games ready to play. */
-  const shelve = (entries, off, shelf) => {
+  /** Publish the games on hand: the rows the Library lists and the games ready to play. */
+  const shelve = (off = { ...$off.get() }) => {
+    const carts = [...bundled], refused = [];
+    for (const raw of slot().list) {
+      let held = admitted.get(raw);
+      if (!held) { held = admit(raw, taken); admitted.set(raw, held); if (held.error) report('catalog', new Error(`A game was not loaded (${held.id}): ${held.error}`)); }
+      if (held.cart) carts.push(held.cart); else refused.push(held);
+    }
+    for (const raw of [...admitted.keys()]) if (!slot().list.includes(raw)) admitted.delete(raw);
     // At least one game stays on, whatever the catalog file says.
-    const carts = [...bundled, ...entries.filter(e => loaded.has(e.dir)).map(e => loaded.get(e.dir).cart)];
     if (carts.every(c => off[c.id])) off = { ...off, [bundled[0].id]: false };
     for (const id of Object.keys(off)) if (!off[id]) delete off[id];
-    const rows = [...bundled.map(c => ({ dir: c.dir, bundled: true, title: c.name, description: c.description, version: c.version, glyph: c.glyph })),
-      // Games first, then the folders that could not be loaded.
-      ...[...entries.filter(e => !e.error), ...entries.filter(e => e.error)].map(e => ({ dir: e.dir, bundled: false, title: e.title || e.dir, description: e.description || '', version: e.version || '', glyph: e.glyph || '', error: e.error || '' }))];
+    // Games first, then what could not be loaded.
+    const rows = [...carts.map(c => ({ id: c.id, bundled: !!c.bundled, title: c.title, description: c.description, version: c.version, glyph: c.glyph, cover: c.cover })),
+      ...refused.map(r => ({ id: r.id, bundled: false, title: r.title || r.id, description: '', version: '', glyph: '', cover: '', error: r.error }))];
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     if (!same($off.get(), off)) $off.set(off);
     if (!same($rows.get(), rows)) $rows.set(rows);
-    if (!same($shelf.get(), shelf)) $shelf.set(shelf);
     for (const [id, held] of [...instances]) if (carts.find(c => c.id === id) !== held.cart) retire(id);
     const before = $carts.get();
     if (before.length !== carts.length || before.some((c, i) => c !== carts[i])) $carts.set(carts);
     settle();
   };
 
-  /** Read the cartridges folder, import what is new or changed, and publish the result. */
+  /** Read catalog.json (someone may have edited it) and publish the result. */
   async function reread() {
-    if (!files) return shelve([], { ...$off.get() }, { available: false, scanned: true });
-    const found = await scan(files, taken);
-    if (!found.available) return shelve([], { ...$off.get() }, { available: false, scanned: true });
-    const off = Object.fromEntries(found.disabled.map(dir => [dir, true]));
-    const wanted = new Set();
-    for (const entry of found.entries) {
-      if (entry.error || off[entry.dir]) continue;
-      wanted.add(entry.dir);
-      const bad = failed.get(entry.dir);
-      if (bad?.mtimeMs === entry.mtimeMs) { entry.error = bad.error; continue; }
-      if (loaded.get(entry.dir)?.mtimeMs === entry.mtimeMs) continue;
-      try {
-        const script = await files.readText('data', `${entry.dir}/${entry.main}`);
-        if (!script?.ok) throw new Error(`${entry.main} could not be read (${script?.error || 'unknown'})`);
-        const create = await load(script.text, deps());
-        loaded.set(entry.dir, { mtimeMs: entry.mtimeMs, cart: { id: entry.dir, dir: entry.dir, bundled: false, name: entry.title, description: entry.description, version: entry.version, glyph: entry.glyph, create } });
-        failed.delete(entry.dir);
-      } catch (error) {
-        entry.error = String(error?.message || error);
-        loaded.delete(entry.dir); failed.set(entry.dir, { mtimeMs: entry.mtimeMs, error: entry.error });
-        report(`library.${entry.dir}`, error);
-      }
-    }
-    for (const dir of [...loaded.keys()]) if (!wanted.has(dir)) loaded.delete(dir);
-    // Covers are only read while the Library is open.
-    if ($library.get()) {
-      const covers = { ...$covers.get() };
-      let changed = false;
-      for (const entry of found.entries) {
-        const key = `${entry.dir}@${entry.mtimeMs}`;
-        if (!entry.cover || entry.error || covers[`${entry.dir}#`] === key) continue;
-        const image = await files.readDataUrl('data', `${entry.dir}/${entry.cover}`);
-        covers[`${entry.dir}#`] = key; covers[entry.dir] = image?.ok ? image.url : ''; changed = true;
-      }
-      if (changed) $covers.set(covers);
-    }
-    shelve(found.entries, off, { available: true, scanned: true, catalogError: found.catalogError || '' });
+    if (!files) return shelve();
+    const file = await files.readText('data', CATALOG);
+    if (!file?.ok && file?.error !== 'not-found') { $shelf.set({ file: false, read: true }); return shelve(); }
+    const { disabled, error } = file.ok ? readCatalog(file.text) : { disabled: [] };
+    $shelf.set({ file: true, read: true, catalogError: error || '' });
+    shelve(Object.fromEntries(disabled.map(id => [id, true])));
   }
-  // One read at a time, in order; a failure is reported and the next read still runs.
+  // One read or write at a time, in order; a failure is reported and the next still runs.
   let chain = Promise.resolve();
-  const queue = work => (chain = chain.then(work).catch(error => report('library', error)));
+  const queue = work => (chain = chain.then(work).catch(error => report('catalog', error)));
   const rescan = () => queue(reread);
 
   const select = id => {
@@ -199,13 +158,12 @@ export function createConsole(ctx, builtin) {
     picked = true; $active.set(id); store('game', id);
   };
   // Switching a game off takes it out of play and off the first menu. At least one game stays on.
-  const setEnabled = (dir, on) => {
+  const setEnabled = (id, on) => {
     const off = { ...$off.get() };
-    if (on) delete off[dir]; else off[dir] = true;
-    if (!$rows.get().some(row => !row.error && !off[row.dir])) return;
-    $off.set(off);
-    if (files) queue(() => files.writeText('data', CATALOG, writeCatalog(Object.keys(off)))); else store('gamesOff', off);
-    queue(reread);
+    if (on) delete off[id]; else off[id] = true;
+    if (!$carts.get().some(c => !off[c.id])) return;
+    shelve(off);
+    if ($shelf.get().file) queue(() => files.writeText('data', CATALOG, writeCatalog(Object.keys(off)))); else store('gamesOff', off);
   };
   const openLibrary = () => { $library.set(true); rescan(); };
 
@@ -217,9 +175,11 @@ export function createConsole(ctx, builtin) {
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
     onStart: task => ask('taskStarted', task)
   });
-  shelve([], { ...$off.get() }, { available: false, scanned: false });
-  // The folder explains itself to whoever opens it, and the first read finds the games in it.
-  if (files) queue(async () => { const note = await files.stat('data', GUIDE); if (note?.ok && !note.exists) await files.writeText('data', GUIDE, GUIDE_TEXT); });
+  shelve();
+  // A game arriving or leaving calls back from another plugin's stack: defer, and never throw into it.
+  const stopSlot = watch(() => { try { queueMicrotask(() => { try { shelve(); } catch (error) { report('catalog', error); } }); } catch { /* could not defer */ } });
+  // The catalog folder explains itself to whoever opens it.
+  if (files) queue(async () => { const note = await files.stat?.('data', GUIDE); if (note?.ok && !note.exists) await files.writeText('data', GUIDE, GUIDE_TEXT); });
   rescan();
 
   // Hear the agent finish while your eyes are on the board.
@@ -251,7 +211,7 @@ export function createConsole(ctx, builtin) {
     if ($modal.get()) return close();
     host.navigate(returnTo && returnTo.split('?')[0] !== ROUTE ? returnTo : '/');
   };
-  const title = cart => (cart?.name ? `Hermes ${cart.name}` : 'Hermes Arrow');
+  const title = cart => (cart?.title ? `Hermes ${cart.title}` : 'Hermes Arrow');
 
   // ---- UI ----------------------------------------------------------------------------------
 
@@ -306,9 +266,9 @@ export function createConsole(ctx, builtin) {
         {on.length > 1
           ? <select aria-label="Game" value={active} onChange={e => select(e.target.value)}
               style={{ minWidth: 0, height: 26, padding: '0 6px', borderRadius: 4, font: 'inherit', color: 'inherit', background: 'var(--ui-bg-quaternary)', border: '1px solid var(--ui-stroke-secondary)' }}>
-              {on.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {on.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
-          : <span style={{ fontWeight: 600 }}>{on[0]?.name}</span>}
+          : <span style={{ fontWeight: 600 }}>{on[0]?.title}</span>}
         <Button size="sm" variant="outline" onClick={onLibrary}>Library</Button>
       </div>
     );
@@ -318,45 +278,43 @@ export function createConsole(ctx, builtin) {
   const CLAMP = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
   // Every game on hand, bundled or custom, each with its switch. Folders that could not be loaded say why.
   function Library() {
-    const rows = useValue($rows), off = useValue($off), active = useValue($active), covers = useValue($covers), shelf = useValue($shelf);
-    useEffect(() => { const id = window.setInterval(rescan, 4000); return () => window.clearInterval(id); }, []);
-    const good = rows.filter(row => !row.error), on = good.filter(row => !off[row.dir]).length;
+    const rows = useValue($rows), off = useValue($off), active = useValue($active), shelf = useValue($shelf);
+    // An agent or a person may edit catalog.json while this is open.
+    useEffect(() => { const id = window.setInterval(rescan, 5000); return () => window.clearInterval(id); }, []);
+    const good = rows.filter(row => !row.error), on = good.filter(row => !off[row.id]).length;
     return (
       <div style={{ ...S.fill, zIndex: 2, display: 'flex', flexDirection: 'column', background: 'var(--ui-bg-elevated)', userSelect: 'text', WebkitUserSelect: 'text' }} role="region" aria-label="Library" data-library="">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--ui-stroke-tertiary)' }}>
           <span style={S.title}>Library</span>
           <span style={{ ...S.muted, ...S.num, fontSize: '0.8125rem' }}>{good.length} game{good.length === 1 ? '' : 's'} · {on} on</span>
           <span style={S.grow} />
-          {shelf.available && <Tip label="Look in the cartridges folder again"><Button size="sm" variant="ghost" onClick={rescan}>Rescan</Button></Tip>}
           <Button size="sm" onClick={() => $library.set(false)}>Done</Button>
         </div>
         <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', padding: '4px 16px 16px' }}>
           {rows.map(row => {
-            const enabled = !off[row.dir], cover = row.error ? '' : covers[row.dir];
+            const enabled = !off[row.id], cover = row.error ? '' : row.cover;
             return (
-              <div key={`${row.bundled ? 'bundled' : 'custom'}:${row.dir}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' }} data-cartridge={row.dir} data-kind={row.bundled ? 'bundled' : 'custom'}>
+              <div key={`${row.error ? 'refused' : 'game'}:${row.id}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' }} data-cartridge={row.id} data-kind={row.bundled ? 'bundled' : 'custom'}>
                 {cover ? <img src={cover} alt="" style={{ ...THUMB, opacity: enabled && !row.error ? 1 : 0.45 }} />
                   : <span style={{ ...THUMB, display: 'grid', placeItems: 'center', fontSize: '1.25rem', color: 'var(--ui-text-tertiary)', opacity: enabled && !row.error ? 1 : 0.45 }} aria-hidden="true">{row.glyph || '◇'}</span>}
                 <div style={{ flex: '1 1 0', minWidth: 0, display: 'grid', gap: 3, fontSize: '0.8125rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                     <span style={{ fontSize: '0.9375rem', fontWeight: 650, opacity: enabled && !row.error ? 1 : 0.6 }}>{row.title}</span>
                     <span style={{ ...S.chip, color: row.bundled ? 'var(--ui-text-tertiary)' : 'var(--ui-accent)' }}>{row.bundled ? 'Bundled' : 'Custom'}</span>
-                    {row.dir === active && !row.error && <span style={{ ...S.chip, color: 'var(--ui-green)' }}>Playing</span>}
+                    {row.id === active && !row.error && <span style={{ ...S.chip, color: 'var(--ui-green)' }}>Playing</span>}
                   </div>
-                  <div style={{ ...S.faint, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}>{row.dir}{row.version ? ` · ${row.version}` : ''}</div>
+                  <div style={{ ...S.faint, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}>{row.id}{row.version ? ` · ${row.version}` : ''}</div>
                   {row.error
                     ? <div style={{ color: 'var(--ui-red)' }} role="alert">Not loaded: {row.error}.</div>
                     : row.description && <div style={{ ...S.muted, ...CLAMP }}>{row.description}</div>}
                 </div>
-                {!row.error && <Switch checked={enabled} onCheckedChange={next => setEnabled(row.dir, next)} aria-label={`${row.title} on`} />}
+                {!row.error && <Switch checked={enabled} onCheckedChange={next => setEnabled(row.id, next)} aria-label={`${row.title} on`} />}
               </div>
             );
           })}
           <div style={{ ...S.faint, paddingTop: 12, display: 'grid', gap: 4 }}>
             {shelf.catalogError && <span style={{ color: 'var(--ui-red)' }}>{shelf.catalogError}. Every game is treated as on until it is fixed.</span>}
-            <span>{shelf.available
-              ? 'Custom games are folders in the cartridges folder. Your agent can add, fork and manage them with the hermes-arrow-games skill.'
-              : shelf.scanned ? 'This version of Hermes Desktop cannot load custom games.' : 'Looking for custom games…'}</span>
+            <span>Each custom game is a Desktop plugin of its own, beside this one in the plugins folder. Your agent can write, fork and manage them with the hermes-arrow-games skill.</span>
           </div>
         </div>
       </div>
@@ -397,7 +355,7 @@ export function createConsole(ctx, builtin) {
     // In the see-through modal the bar sits halfway between the board's opacity and solid, so it always reads.
     const barStyle = modal && fade > 0 ? { ...S.bar, background: 'color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) 50%, transparent)' } : S.bar;
     useEffect(() => { root.current?.focus({ preventScroll: true }); }, [id]);
-    // A game dropped into the folder, or switched by an agent, shows up when the page is next opened.
+    // A game switched on or off in catalog.json by an agent shows up when the page is next opened.
     useEffect(() => { rescan(); }, []);
     const key = e => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -477,20 +435,20 @@ export function createConsole(ctx, builtin) {
   const offers = ({ busy } = {}) => {
     try {
       const cart = find($active.get());
-      return busy && cart && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: `Play ${cart.name}`, icon: 'game', run: () => { try { open(); } catch (error) { report('offer', error); } } }] : [];
+      return busy && cart && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: `Play ${cart.title}`, icon: 'game', run: () => { try { open(); } catch (error) { report('offer', error); } } }] : [];
     } catch (error) { report('offers', error); return []; }
   };
   // Older Desktops have no pill strip: the same offer as a quiet link under the composer.
   function OfferLink() {
     const task = useValue(tracker.$task), offer = useValue($offer), isOpen = useValue($modal), cart = find(useValue($active));
     if (!task.busy || !offer || isOpen || onGame() || !cart) return null;
-    return <Button size="sm" variant="ghost" onClick={open}>{cart.glyph || '▶'} Play {cart.name}</Button>;
+    return <Button size="sm" variant="ghost" onClick={open}>{cart.glyph || '▶'} Play {cart.title}</Button>;
   }
 
   const dispose = () => {
-    try { stopDone?.(); tracker.dispose(); } catch { /* already gone */ }
+    try { stopSlot(); stopDone?.(); tracker.dispose(); } catch { /* already gone */ }
     for (const id of [...instances.keys()]) retire(id);
-    try { audio.dispose(); if (urls) { for (const url of Object.values(urls)) URL.revokeObjectURL(url); delete globalThis.__hermesArrowReact; delete globalThis.__hermesArrowJsx; } } catch { /* already gone */ }
+    try { audio.dispose(); } catch { /* already gone */ }
   };
 
   // The game in play is started now, so a turn already running when the plugin loads finds it ready.

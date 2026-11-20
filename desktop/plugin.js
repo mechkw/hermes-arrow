@@ -1,11 +1,9 @@
-// Hermes Arrow 0.9.0 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
+// Hermes Arrow 0.9.1 — built from src/ by scripts/build.mjs. Edit the sources, not this file.
 
 // src/plugin.jsx
 import { COMPOSER_AREAS, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS } from "@hermes/plugin-sdk";
 
 // src/console/console.jsx
-import * as React from "react";
-import * as ReactJsx from "react/jsx-runtime";
 import { Component, useEffect as useEffect2, useRef, useState as useState2 } from "react";
 import {
   atom,
@@ -356,29 +354,35 @@ var kit = {
   SettingNote
 };
 
-// src/console/library.js
-var CONTRACT = 2;
-var MANIFEST = "cartridge.json";
+// src/console/catalog.js
+var CONTRACT = 3;
 var CATALOG = "catalog.json";
 var GUIDE = "README.txt";
-var DIR = /^[a-z0-9][a-z0-9-]{0,63}$/;
-var FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 var text = (v, max) => typeof v === "string" ? v.trim().slice(0, max) : "";
-function readManifest(source) {
-  let m;
-  try {
-    m = JSON.parse(source);
-  } catch (error) {
-    return { error: `${MANIFEST} is not valid JSON (${error.message})` };
-  }
-  if (!m || typeof m !== "object" || Array.isArray(m)) return { error: `${MANIFEST} must be a JSON object` };
-  if (m.contract !== CONTRACT) return { error: `built for contract ${JSON.stringify(m.contract)}; this console speaks ${CONTRACT}` };
-  const title = text(m.title, 40);
-  if (!title) return { error: `${MANIFEST} needs a "title"` };
-  const main = m.main === void 0 ? "cartridge.js" : m.main, cover = m.cover === void 0 ? "" : m.cover;
-  if (typeof main !== "string" || !FILE.test(main) || !/\.m?js$/.test(main)) return { error: '"main" must name a .js file in the same folder' };
-  if (cover !== "" && (typeof cover !== "string" || !FILE.test(cover) || !/\.(png|jpe?g|webp|gif|svg)$/i.test(cover))) return { error: '"cover" must name an image file in the same folder' };
-  return { manifest: { title, description: text(m.description, 240), version: text(String(m.version ?? ""), 20), glyph: [...text(m.glyph, 8)].slice(0, 2).join(""), main, cover } };
+function slot() {
+  const s = globalThis.__hermesCartridges ||= {};
+  if (!Array.isArray(s.list)) s.list = [];
+  if (!(s.listeners instanceof Set)) s.listeners = /* @__PURE__ */ new Set();
+  return s;
+}
+function watch(fn) {
+  const s = slot();
+  s.listeners.add(fn);
+  return () => s.listeners.delete(fn);
+}
+function admit(raw, taken = /* @__PURE__ */ new Set()) {
+  const id = typeof raw?.id === "string" ? raw.id : "";
+  const no = (error) => ({ id: id || "(no id)", title: text(raw?.title, 40), error });
+  if (!raw || typeof raw !== "object") return no("the cartridge is not an object");
+  if (!ID.test(id)) return no("the id must be lowercase letters, digits and dashes");
+  if (taken.has(id)) return no(`"${id}" is a bundled game. A fork needs an id of its own`);
+  if (raw.contract !== CONTRACT) return no(`built for contract ${JSON.stringify(raw.contract)}; this console speaks ${CONTRACT}`);
+  const title = text(raw.title, 40);
+  if (!title) return no('the cartridge needs a "title"');
+  if (typeof raw.create !== "function") return no("create(api) is missing");
+  const cover = typeof raw.cover === "string" && /^data:image\/(png|jpeg|webp|gif|svg\+xml)[;,]/.test(raw.cover) && raw.cover.length < 4e5 ? raw.cover : "";
+  return { cart: { id, title, description: text(raw.description, 240), version: text(String(raw.version ?? ""), 20), glyph: [...text(raw.glyph, 8)].slice(0, 2).join(""), cover, create: raw.create, source: raw } };
 }
 function readCatalog(source) {
   try {
@@ -390,83 +394,20 @@ function readCatalog(source) {
 }
 var writeCatalog = (disabled) => `${JSON.stringify({ disabled: [...disabled].sort() }, null, 2)}
 `;
-async function scan(files, taken = /* @__PURE__ */ new Set()) {
-  if (!files?.list) return { available: false, entries: [], disabled: null };
-  const root = await files.list("data", "");
-  if (!root?.ok) return { available: false, entries: [], disabled: null };
-  const entries = [];
-  for (const item of [...root.entries].filter((e) => e.isDirectory && !e.name.startsWith(".")).sort((a, b) => a.name.localeCompare(b.name))) {
-    const dir = item.name, entry = { dir };
-    entries.push(entry);
-    if (!DIR.test(dir)) {
-      entry.error = "the folder name must be lowercase letters, digits and dashes";
-      continue;
-    }
-    if (taken.has(dir)) {
-      entry.error = `"${dir}" is a bundled game. A fork needs a folder name of its own`;
-      continue;
-    }
-    const file = await files.readText("data", `${dir}/${MANIFEST}`);
-    if (!file?.ok) {
-      entry.error = file?.error === "not-found" ? `no ${MANIFEST} in this folder` : `${MANIFEST} could not be read (${file?.error || "unknown"})`;
-      continue;
-    }
-    const { manifest, error } = readManifest(file.text);
-    if (error) {
-      entry.error = error;
-      continue;
-    }
-    Object.assign(entry, manifest);
-    const main = await files.stat("data", `${dir}/${manifest.main}`);
-    if (!main?.ok || !main.exists || main.isDirectory) {
-      entry.error = `${manifest.main} is missing`;
-      continue;
-    }
-    entry.mtimeMs = Math.max(main.mtimeMs || 0, file.mtimeMs || 0);
-  }
-  let disabled = [], catalogError;
-  const catalog = await files.readText("data", CATALOG);
-  if (catalog?.ok) ({ disabled, error: catalogError } = readCatalog(catalog.text));
-  return { available: true, entries, disabled, catalogError };
-}
-var SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(react\/jsx-runtime|react)\2/g;
-var rewrite = (source, urls) => source.replace(SPECIFIER, (all, lead, quote, name) => urls[name] ? `${lead}${quote}${urls[name]}${quote}` : all);
-var shimSource = (key, names) => `const m = globalThis[${JSON.stringify(key)}];
-export default m.default ?? m;
-` + (names.length ? `export const { ${names.join(", ")} } = m;
-` : "");
-var exportNames = (ns) => Object.keys(ns).filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name));
-async function load(source, urls) {
-  const url = URL.createObjectURL(new Blob([rewrite(source, urls)], { type: "text/javascript" }));
-  let mod;
-  try {
-    mod = await import(
-      /* @vite-ignore */
-      url
-    );
-  } catch (error) {
-    throw new Error(/resolve module specifier|bare specifier/i.test(String(error?.message)) ? `the script imports something other than react (${error.message})` : `the script failed to load (${error?.message || error})`);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-  const create2 = typeof mod.default === "function" ? mod.default : mod.default?.create || mod.create;
-  if (typeof create2 !== "function") throw new Error("the script must default-export create(api)");
-  return create2;
-}
-var GUIDE_TEXT = `Hermes Arrow: cartridges folder
+var GUIDE_TEXT = `Hermes Arrow: catalog folder
 
-Each folder here is a custom game for Hermes Arrow. A game folder holds:
+catalog.json lists the games that are switched off:
 
-  cartridge.json   title, description, version, cover and the script's name
-  cartridge.js     the game
-  cover.png        optional thumbnail for the Library
+  {"disabled": ["game-id"]}
 
-catalog.json lists the games that are switched off: {"disabled": ["folder-name"]}.
-The Library (the gear button in the game, then Library) shows every game found here and
-says why a folder was not loaded.
+A game's id is shown under its title in the Library (the gear button in the game, then Library).
+Bundled games are switched off the same way. At least one game always stays on.
+
+Custom games are not kept here. Each one is a Desktop plugin of its own, in a folder beside
+hermes-arrow in the desktop-plugins folder.
 
 Writing a game, forking a bundled one, and the rules for agents:
-https://github.com/mechkw/hermes-arrow/tree/main/skill/hermes-arrow-games
+https://github.com/mechkw/hermes-arrow/tree/main/skills/hermes-arrow-games
 `;
 
 // src/console/effort.js
@@ -620,9 +561,9 @@ function createTracker({
 
 // src/console/console.jsx
 import { Fragment as Fragment2, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
-var ID = "hermes-arrow";
+var ID2 = "hermes-arrow";
 var ROUTE = "/hermes-arrow";
-var VERSION = "0.9.0";
+var VERSION = "0.9.1";
 var MAX_FADE = 0.8;
 var MODAL_W = "min(94vw, 1100px)";
 var MODAL_H = "min(86vh, 860px)";
@@ -634,7 +575,7 @@ var CHIME = {
 };
 function createConsole(ctx, builtin) {
   const $sound = atom(true), $volume = atom(0.7), $modal = atom(false), $fade = atom(0), $offer = atom(true);
-  const $carts = atom([]), $rows = atom([]), $off = atom({}), $active = atom(""), $library = atom(false), $covers = atom({}), $shelf = atom({ available: false, scanned: false });
+  const $carts = atom([]), $rows = atom([]), $off = atom({}), $active = atom(""), $library = atom(false), $shelf = atom({ file: false, read: false });
   const stored = (key, fallback) => {
     try {
       const v = ctx.storage.get(key, fallback);
@@ -671,15 +612,13 @@ function createConsole(ctx, builtin) {
     } catch {
     }
   };
-  const files = ctx.files?.list ? ctx.files : null;
-  const bundled = builtin.map((b) => ({ id: b.dir, dir: b.dir, bundled: true, name: b.module.title, description: b.module.description || "", version: b.module.version || "", glyph: b.module.glyph || "", create: b.module.create }));
+  const files = ctx.files?.readText && ctx.files?.writeText ? ctx.files : null;
+  const bundled = builtin.map((b) => ({ id: b.dir, bundled: true, title: b.module.title, description: b.module.description || "", version: b.module.version || "", glyph: b.module.glyph || "", cover: b.cover || "", create: b.module.create }));
   const taken = new Set(bundled.map((c) => c.id)), prefixes = new Map(builtin.map((b) => [b.dir, b.prefix]));
   const instances = /* @__PURE__ */ new Map();
-  const loaded = /* @__PURE__ */ new Map();
-  const failed = /* @__PURE__ */ new Map();
+  const admitted = /* @__PURE__ */ new Map();
   const find = (id) => $carts.get().find((c) => c.id === id);
   const playable = () => $carts.get().filter((c) => !$off.get()[c.id]);
-  $covers.set(Object.fromEntries(builtin.filter((b) => b.cover).map((b) => [b.dir, b.cover])));
   if (!files) $off.set({ ...stored("gamesOff", {}) || {} });
   const apiFor = (cart) => {
     const prefix = prefixes.has(cart.id) ? prefixes.get(cart.id) : `cart.${cart.id}.`;
@@ -715,7 +654,7 @@ function createConsole(ctx, builtin) {
     Bar: () => null,
     Stage: () => /* @__PURE__ */ jsxs2(kit.Card, { label: "Game failed to start", tone: "red", children: [
       /* @__PURE__ */ jsxs2(kit.Headline, { color: "red", children: [
-        cart.name,
+        cart.title,
         " did not start"
       ] }),
       /* @__PURE__ */ jsx2(kit.Line, { children: String(error?.message || error) })
@@ -756,85 +695,51 @@ function createConsole(ctx, builtin) {
       report(`${id}.dispose`, error);
     }
   };
-  let urls = null;
-  const deps = () => {
-    if (!urls) {
-      globalThis.__hermesArrowReact = React;
-      globalThis.__hermesArrowJsx = ReactJsx;
-      const blob = (source) => URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-      urls = { react: blob(shimSource("__hermesArrowReact", exportNames(React))), "react/jsx-runtime": blob(shimSource("__hermesArrowJsx", exportNames(ReactJsx))) };
-    }
-    return urls;
-  };
   let picked = false;
   const settle2 = () => {
     const ok = playable(), now2 = $active.get(), want = picked ? now2 : stored("game", "") || now2;
     $active.set((ok.find((c) => c.id === want) || ok.find((c) => c.id === now2) || ok[0] || $carts.get()[0])?.id || "");
   };
-  const shelve = (entries, off, shelf) => {
-    const carts = [...bundled, ...entries.filter((e) => loaded.has(e.dir)).map((e) => loaded.get(e.dir).cart)];
+  const shelve = (off = { ...$off.get() }) => {
+    const carts = [...bundled], refused = [];
+    for (const raw of slot().list) {
+      let held = admitted.get(raw);
+      if (!held) {
+        held = admit(raw, taken);
+        admitted.set(raw, held);
+        if (held.error) report("catalog", new Error(`A game was not loaded (${held.id}): ${held.error}`));
+      }
+      if (held.cart) carts.push(held.cart);
+      else refused.push(held);
+    }
+    for (const raw of [...admitted.keys()]) if (!slot().list.includes(raw)) admitted.delete(raw);
     if (carts.every((c) => off[c.id])) off = { ...off, [bundled[0].id]: false };
     for (const id of Object.keys(off)) if (!off[id]) delete off[id];
     const rows = [
-      ...bundled.map((c) => ({ dir: c.dir, bundled: true, title: c.name, description: c.description, version: c.version, glyph: c.glyph })),
-      // Games first, then the folders that could not be loaded.
-      ...[...entries.filter((e) => !e.error), ...entries.filter((e) => e.error)].map((e) => ({ dir: e.dir, bundled: false, title: e.title || e.dir, description: e.description || "", version: e.version || "", glyph: e.glyph || "", error: e.error || "" }))
+      ...carts.map((c) => ({ id: c.id, bundled: !!c.bundled, title: c.title, description: c.description, version: c.version, glyph: c.glyph, cover: c.cover })),
+      ...refused.map((r) => ({ id: r.id, bundled: false, title: r.title || r.id, description: "", version: "", glyph: "", cover: "", error: r.error }))
     ];
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     if (!same($off.get(), off)) $off.set(off);
     if (!same($rows.get(), rows)) $rows.set(rows);
-    if (!same($shelf.get(), shelf)) $shelf.set(shelf);
     for (const [id, held] of [...instances]) if (carts.find((c) => c.id === id) !== held.cart) retire(id);
     const before = $carts.get();
     if (before.length !== carts.length || before.some((c, i) => c !== carts[i])) $carts.set(carts);
     settle2();
   };
   async function reread() {
-    if (!files) return shelve([], { ...$off.get() }, { available: false, scanned: true });
-    const found = await scan(files, taken);
-    if (!found.available) return shelve([], { ...$off.get() }, { available: false, scanned: true });
-    const off = Object.fromEntries(found.disabled.map((dir) => [dir, true]));
-    const wanted = /* @__PURE__ */ new Set();
-    for (const entry of found.entries) {
-      if (entry.error || off[entry.dir]) continue;
-      wanted.add(entry.dir);
-      const bad = failed.get(entry.dir);
-      if (bad?.mtimeMs === entry.mtimeMs) {
-        entry.error = bad.error;
-        continue;
-      }
-      if (loaded.get(entry.dir)?.mtimeMs === entry.mtimeMs) continue;
-      try {
-        const script = await files.readText("data", `${entry.dir}/${entry.main}`);
-        if (!script?.ok) throw new Error(`${entry.main} could not be read (${script?.error || "unknown"})`);
-        const create2 = await load(script.text, deps());
-        loaded.set(entry.dir, { mtimeMs: entry.mtimeMs, cart: { id: entry.dir, dir: entry.dir, bundled: false, name: entry.title, description: entry.description, version: entry.version, glyph: entry.glyph, create: create2 } });
-        failed.delete(entry.dir);
-      } catch (error) {
-        entry.error = String(error?.message || error);
-        loaded.delete(entry.dir);
-        failed.set(entry.dir, { mtimeMs: entry.mtimeMs, error: entry.error });
-        report(`library.${entry.dir}`, error);
-      }
+    if (!files) return shelve();
+    const file = await files.readText("data", CATALOG);
+    if (!file?.ok && file?.error !== "not-found") {
+      $shelf.set({ file: false, read: true });
+      return shelve();
     }
-    for (const dir of [...loaded.keys()]) if (!wanted.has(dir)) loaded.delete(dir);
-    if ($library.get()) {
-      const covers = { ...$covers.get() };
-      let changed = false;
-      for (const entry of found.entries) {
-        const key = `${entry.dir}@${entry.mtimeMs}`;
-        if (!entry.cover || entry.error || covers[`${entry.dir}#`] === key) continue;
-        const image = await files.readDataUrl("data", `${entry.dir}/${entry.cover}`);
-        covers[`${entry.dir}#`] = key;
-        covers[entry.dir] = image?.ok ? image.url : "";
-        changed = true;
-      }
-      if (changed) $covers.set(covers);
-    }
-    shelve(found.entries, off, { available: true, scanned: true, catalogError: found.catalogError || "" });
+    const { disabled, error } = file.ok ? readCatalog(file.text) : { disabled: [] };
+    $shelf.set({ file: true, read: true, catalogError: error || "" });
+    shelve(Object.fromEntries(disabled.map((id) => [id, true])));
   }
   let chain = Promise.resolve();
-  const queue = (work) => chain = chain.then(work).catch((error) => report("library", error));
+  const queue = (work) => chain = chain.then(work).catch((error) => report("catalog", error));
   const rescan = () => queue(reread);
   const select = (id) => {
     if (!find(id) || $off.get()[id]) return;
@@ -842,15 +747,14 @@ function createConsole(ctx, builtin) {
     $active.set(id);
     store("game", id);
   };
-  const setEnabled = (dir, on) => {
+  const setEnabled = (id, on) => {
     const off = { ...$off.get() };
-    if (on) delete off[dir];
-    else off[dir] = true;
-    if (!$rows.get().some((row) => !row.error && !off[row.dir])) return;
-    $off.set(off);
-    if (files) queue(() => files.writeText("data", CATALOG, writeCatalog(Object.keys(off))));
+    if (on) delete off[id];
+    else off[id] = true;
+    if (!$carts.get().some((c) => !off[c.id])) return;
+    shelve(off);
+    if ($shelf.get().file) queue(() => files.writeText("data", CATALOG, writeCatalog(Object.keys(off))));
     else store("gamesOff", off);
-    queue(reread);
   };
   const openLibrary = () => {
     $library.set(true);
@@ -865,9 +769,21 @@ function createConsole(ctx, builtin) {
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
     onStart: (task) => ask("taskStarted", task)
   });
-  shelve([], { ...$off.get() }, { available: false, scanned: false });
+  shelve();
+  const stopSlot = watch(() => {
+    try {
+      queueMicrotask(() => {
+        try {
+          shelve();
+        } catch (error) {
+          report("catalog", error);
+        }
+      });
+    } catch {
+    }
+  });
   if (files) queue(async () => {
-    const note = await files.stat("data", GUIDE);
+    const note = await files.stat?.("data", GUIDE);
     if (note?.ok && !note.exists) await files.writeText("data", GUIDE, GUIDE_TEXT);
   });
   rescan();
@@ -919,7 +835,7 @@ function createConsole(ctx, builtin) {
     if ($modal.get()) return close();
     host2.navigate(returnTo && returnTo.split("?")[0] !== ROUTE ? returnTo : "/");
   };
-  const title = (cart) => cart?.name ? `Hermes ${cart.name}` : "Hermes Arrow";
+  const title = (cart) => cart?.title ? `Hermes ${cart.title}` : "Hermes Arrow";
   class Guard extends Component {
     constructor(props) {
       super(props);
@@ -994,21 +910,21 @@ function createConsole(ctx, builtin) {
           value: active,
           onChange: (e) => select(e.target.value),
           style: { minWidth: 0, height: 26, padding: "0 6px", borderRadius: 4, font: "inherit", color: "inherit", background: "var(--ui-bg-quaternary)", border: "1px solid var(--ui-stroke-secondary)" },
-          children: on.map((c) => /* @__PURE__ */ jsx2("option", { value: c.id, children: c.name }, c.id))
+          children: on.map((c) => /* @__PURE__ */ jsx2("option", { value: c.id, children: c.title }, c.id))
         }
-      ) : /* @__PURE__ */ jsx2("span", { style: { fontWeight: 600 }, children: on[0]?.name }),
+      ) : /* @__PURE__ */ jsx2("span", { style: { fontWeight: 600 }, children: on[0]?.title }),
       /* @__PURE__ */ jsx2(Button2, { size: "sm", variant: "outline", onClick: onLibrary, children: "Library" })
     ] });
   }
   const THUMB = { width: 72, height: 54, borderRadius: 4, flex: "none", objectFit: "cover", background: "var(--ui-bg-quaternary)", border: "1px solid var(--ui-stroke-tertiary)", boxSizing: "border-box" };
   const CLAMP = { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" };
   function Library() {
-    const rows = useValue($rows), off = useValue($off), active = useValue($active), covers = useValue($covers), shelf = useValue($shelf);
+    const rows = useValue($rows), off = useValue($off), active = useValue($active), shelf = useValue($shelf);
     useEffect2(() => {
-      const id = window.setInterval(rescan, 4e3);
+      const id = window.setInterval(rescan, 5e3);
       return () => window.clearInterval(id);
     }, []);
-    const good = rows.filter((row) => !row.error), on = good.filter((row) => !off[row.dir]).length;
+    const good = rows.filter((row) => !row.error), on = good.filter((row) => !off[row.id]).length;
     return /* @__PURE__ */ jsxs2("div", { style: { ...S.fill, zIndex: 2, display: "flex", flexDirection: "column", background: "var(--ui-bg-elevated)", userSelect: "text", WebkitUserSelect: "text" }, role: "region", "aria-label": "Library", "data-library": "", children: [
       /* @__PURE__ */ jsxs2("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--ui-stroke-tertiary)" }, children: [
         /* @__PURE__ */ jsx2("span", { style: S.title, children: "Library" }),
@@ -1021,22 +937,21 @@ function createConsole(ctx, builtin) {
           " on"
         ] }),
         /* @__PURE__ */ jsx2("span", { style: S.grow }),
-        shelf.available && /* @__PURE__ */ jsx2(Tip2, { label: "Look in the cartridges folder again", children: /* @__PURE__ */ jsx2(Button2, { size: "sm", variant: "ghost", onClick: rescan, children: "Rescan" }) }),
         /* @__PURE__ */ jsx2(Button2, { size: "sm", onClick: () => $library.set(false), children: "Done" })
       ] }),
       /* @__PURE__ */ jsxs2("div", { style: { flex: "1 1 0", minHeight: 0, overflowY: "auto", padding: "4px 16px 16px" }, children: [
         rows.map((row) => {
-          const enabled = !off[row.dir], cover = row.error ? "" : covers[row.dir];
-          return /* @__PURE__ */ jsxs2("div", { style: { display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--ui-stroke-tertiary)" }, "data-cartridge": row.dir, "data-kind": row.bundled ? "bundled" : "custom", children: [
+          const enabled = !off[row.id], cover = row.error ? "" : row.cover;
+          return /* @__PURE__ */ jsxs2("div", { style: { display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--ui-stroke-tertiary)" }, "data-cartridge": row.id, "data-kind": row.bundled ? "bundled" : "custom", children: [
             cover ? /* @__PURE__ */ jsx2("img", { src: cover, alt: "", style: { ...THUMB, opacity: enabled && !row.error ? 1 : 0.45 } }) : /* @__PURE__ */ jsx2("span", { style: { ...THUMB, display: "grid", placeItems: "center", fontSize: "1.25rem", color: "var(--ui-text-tertiary)", opacity: enabled && !row.error ? 1 : 0.45 }, "aria-hidden": "true", children: row.glyph || "\u25C7" }),
             /* @__PURE__ */ jsxs2("div", { style: { flex: "1 1 0", minWidth: 0, display: "grid", gap: 3, fontSize: "0.8125rem" }, children: [
               /* @__PURE__ */ jsxs2("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }, children: [
                 /* @__PURE__ */ jsx2("span", { style: { fontSize: "0.9375rem", fontWeight: 650, opacity: enabled && !row.error ? 1 : 0.6 }, children: row.title }),
                 /* @__PURE__ */ jsx2("span", { style: { ...S.chip, color: row.bundled ? "var(--ui-text-tertiary)" : "var(--ui-accent)" }, children: row.bundled ? "Bundled" : "Custom" }),
-                row.dir === active && !row.error && /* @__PURE__ */ jsx2("span", { style: { ...S.chip, color: "var(--ui-green)" }, children: "Playing" })
+                row.id === active && !row.error && /* @__PURE__ */ jsx2("span", { style: { ...S.chip, color: "var(--ui-green)" }, children: "Playing" })
               ] }),
               /* @__PURE__ */ jsxs2("div", { style: { ...S.faint, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }, children: [
-                row.dir,
+                row.id,
                 row.version ? ` \xB7 ${row.version}` : ""
               ] }),
               row.error ? /* @__PURE__ */ jsxs2("div", { style: { color: "var(--ui-red)" }, role: "alert", children: [
@@ -1045,15 +960,15 @@ function createConsole(ctx, builtin) {
                 "."
               ] }) : row.description && /* @__PURE__ */ jsx2("div", { style: { ...S.muted, ...CLAMP }, children: row.description })
             ] }),
-            !row.error && /* @__PURE__ */ jsx2(Switch, { checked: enabled, onCheckedChange: (next) => setEnabled(row.dir, next), "aria-label": `${row.title} on` })
-          ] }, `${row.bundled ? "bundled" : "custom"}:${row.dir}`);
+            !row.error && /* @__PURE__ */ jsx2(Switch, { checked: enabled, onCheckedChange: (next) => setEnabled(row.id, next), "aria-label": `${row.title} on` })
+          ] }, `${row.error ? "refused" : "game"}:${row.id}`);
         }),
         /* @__PURE__ */ jsxs2("div", { style: { ...S.faint, paddingTop: 12, display: "grid", gap: 4 }, children: [
           shelf.catalogError && /* @__PURE__ */ jsxs2("span", { style: { color: "var(--ui-red)" }, children: [
             shelf.catalogError,
             ". Every game is treated as on until it is fixed."
           ] }),
-          /* @__PURE__ */ jsx2("span", { children: shelf.available ? "Custom games are folders in the cartridges folder. Your agent can add, fork and manage them with the hermes-arrow-games skill." : shelf.scanned ? "This version of Hermes Desktop cannot load custom games." : "Looking for custom games\u2026" })
+          /* @__PURE__ */ jsx2("span", { children: "Each custom game is a Desktop plugin of its own, beside this one in the plugins folder. Your agent can write, fork and manage them with the hermes-arrow-games skill." })
         ] })
       ] })
     ] });
@@ -1184,7 +1099,7 @@ function createConsole(ctx, builtin) {
   const offers = ({ busy } = {}) => {
     try {
       const cart = find($active.get());
-      return busy && cart && $offer.get() && !onGame() ? [{ id: `${ID}.play`, label: `Play ${cart.name}`, icon: "game", run: () => {
+      return busy && cart && $offer.get() && !onGame() ? [{ id: `${ID2}.play`, label: `Play ${cart.title}`, icon: "game", run: () => {
         try {
           open();
         } catch (error) {
@@ -1202,11 +1117,12 @@ function createConsole(ctx, builtin) {
     return /* @__PURE__ */ jsxs2(Button2, { size: "sm", variant: "ghost", onClick: open, children: [
       cart.glyph || "\u25B6",
       " Play ",
-      cart.name
+      cart.title
     ] });
   }
   const dispose = () => {
     try {
+      stopSlot();
       stopDone?.();
       tracker.dispose();
     } catch {
@@ -1214,11 +1130,6 @@ function createConsole(ctx, builtin) {
     for (const id of [...instances.keys()]) retire(id);
     try {
       audio.dispose();
-      if (urls) {
-        for (const url of Object.values(urls)) URL.revokeObjectURL(url);
-        delete globalThis.__hermesArrowReact;
-        delete globalThis.__hermesArrowJsx;
-      }
     } catch {
     }
   };
@@ -2271,12 +2182,10 @@ var voice_default = {
 
 // src/cartridges/arrow/cartridge.json
 var cartridge_default = {
-  contract: 2,
+  contract: 3,
   title: "Arrow",
   description: "Tap the arrows out, one clear path at a time. Boards grow with how long and hard your agent is working.",
-  glyph: "\u27A4",
-  cover: "cover.png",
-  main: "cartridge.js"
+  glyph: "\u27A4"
 };
 
 // src/cartridges/arrow/index.jsx
@@ -2593,7 +2502,7 @@ function create(api) {
     debug: { game, deal, $result, $handicap, setHandicap, stats: () => stats, task: () => ({ ...api.task(), level: levelForTask(api.task()) }) }
   };
 }
-var arrow_default = { version: "0.9.0", ...cartridge_default, create };
+var arrow_default = { version: "0.9.1", ...cartridge_default, create };
 
 // src/cartridges/arrow/cover.png
 var cover_default = "data:image/png;base64,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";
@@ -2601,7 +2510,7 @@ var cover_default = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASAAAADYCAIAA
 // src/plugin.jsx
 import { jsx as jsx4 } from "react/jsx-runtime";
 var plugin_default = {
-  id: ID,
+  id: ID2,
   name: "Hermes Arrow",
   description: "An arrow-escape puzzle for the wait. Boards scale with how long and hard your agent is working.",
   register(ctx) {
@@ -2621,7 +2530,7 @@ var plugin_default = {
       { id: "nav", area: SIDEBAR_NAV_AREA, order: 90, data: { path: ROUTE, label: "Arrow", codicon: "arrow-right" } },
       { id: "chip", area: STATUSBAR_AREAS.right, order: 85, render: () => /* @__PURE__ */ jsx4(app.Chip, {}) },
       COMPOSER_AREAS.microActions ? { id: "offer", area: COMPOSER_AREAS.microActions, data: { resolve: app.offers } } : { id: "offer", area: COMPOSER_AREAS.underside, render: () => /* @__PURE__ */ jsx4(app.OfferLink, {}) },
-      { id: "open", area: PALETTE_AREA, data: { id: `${ID}.open`, label: "Hermes Arrow: Play", keywords: ["game", "arrow", "puzzle", "wait", "play"], run: app.open } },
+      { id: "open", area: PALETTE_AREA, data: { id: `${ID2}.open`, label: "Hermes Arrow: Play", keywords: ["game", "arrow", "puzzle", "wait", "play"], run: app.open } },
       // Read-only: the draft passes through untouched. Its wording seeds the difficulty estimate.
       { id: "prompt", area: COMPOSER_AREAS.middleware, data: { handler: (draft) => {
         try {

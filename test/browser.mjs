@@ -5,13 +5,17 @@ import { readFile, mkdir, rm } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { extname, join, normalize } from 'node:path';
 
-const root = new URL('../dev/', import.meta.url).pathname, out = new URL('./out/', import.meta.url).pathname;
+const root = new URL('../dev/', import.meta.url).pathname, out = new URL('./out/', import.meta.url).pathname, repo = new URL('..', import.meta.url).pathname;
 await mkdir(out, { recursive: true });
 const types = { '.html': 'text/html', '.js': 'text/javascript' };
 const server = createServer(async (req, res) => {
   try {
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^\/+/, '') || 'index.html';
-    const body = await readFile(join(root, path));
+    // /games/<id>/plugin.js serves a game plugin: the skill's templates, then forks built into dist/.
+    const game = /^games\/([a-z0-9-]+)\/plugin\.js$/.exec(path);
+    const body = game
+      ? await readFile(join(repo, 'skills/hermes-arrow-games/templates', game[1], 'plugin.js')).catch(() => readFile(join(repo, 'dist/cartridges', game[1], 'plugin.js')))
+      : await readFile(join(root, path));
     res.writeHead(200, { 'content-type': types[extname(path)] || 'application/octet-stream' }).end(body);
   } catch { res.writeHead(404).end(); }
 }).listen(0, '127.0.0.1');
@@ -457,14 +461,12 @@ try {
   assert.equal((await snap(page)).mode, 'task', 'loading mid-task deals a task board');
   await page.close();
 
-  // --- The library: games as folders in the cartridges folder ----------------------------------
-  const tpl = new URL('../skill/hermes-arrow-games/templates/hello-cartridge/', import.meta.url).pathname;
-  const tapFiles = { 'hello-cartridge/cartridge.json': await readFile(tpl + 'cartridge.json', 'utf8'), 'hello-cartridge/cartridge.js': await readFile(tpl + 'cartridge.js', 'utf8'),
-    'hello-cartridge/cover.png': 'data:image/png;base64,' + (await readFile(tpl + 'cover.png')).toString('base64') };
+  // --- The library: games that are Desktop plugins of their own -------------------------------
+  const TAP = '/games/hello-cartridge/plugin.js';
   const seeded = async (disk, query = '') => {
     const pg = await open({ width: 1180, height: 760 }, undefined, query, disk);
     await pg.click('a:has-text("Arrow")');
-    await pg.waitForFunction(() => window.arrow?.game.status === 'play' && window.arrow.$shelf.get().scanned);
+    await pg.waitForFunction(() => window.arrow?.game.status === 'play' && window.arrow.$shelf.get().read !== undefined);
     return pg;
   };
   const libraryRows = pg => pg.locator('[data-library] [data-cartridge]').evaluateAll(list => list.map(el => `${el.dataset.cartridge}:${el.dataset.kind}`));
@@ -477,64 +479,67 @@ try {
   await page.waitForSelector('[data-library]');
   assert.deepEqual(await libraryRows(page), ['arrow:bundled']);
   assert.equal(await page.locator('[aria-label="Settings"][aria-expanded="true"]').count(), 0, 'the settings panel gets out of the way');
-  assert.ok((await page.evaluate(() => window.files.read('README.txt'))).includes('cartridges folder'), 'the folder explains itself');
-  // A game dropped into the folder while the Library is open appears on its own.
-  await page.evaluate(files => { for (const [path, text] of Object.entries(files)) window.files.put(path, text); }, tapFiles);
-  await page.waitForSelector('[data-cartridge="hello-cartridge"]', { timeout: 8000 });
+  await page.waitForFunction(() => (window.files.read('README.txt') || '').includes('catalog.json'));
+  // A game plugin the Desktop loads while the Library is open appears on its own.
+  await page.evaluate(async url => { window.unloadTap = await window.games.load(url); }, TAP);
+  await page.waitForSelector('[data-cartridge="hello-cartridge"]');
   await page.close();
 
-  // An older Desktop without the file door still plays the bundled game and says why there are no others.
-  page = await seeded({}, '?nofiles');
+  // An older Desktop without the file door keeps the catalog in the plugin's own storage instead.
+  page = await seeded({}, `?nofiles&games=${TAP}`);
   await page.click('[aria-label="Settings"]');
   await page.click('text=Library');
-  await page.waitForSelector('text=cannot load custom games');
+  await page.click('[aria-label="Tap on"]');
+  assert.deepEqual(await page.evaluate(() => window.store.get('gamesOff')), { 'hello-cartridge': true });
   await page.click('[data-library] >> text=Done');
   await page.close();
 
-  // A folder already there at load, a forked bundled game, and three folders that are not games.
+  // Games loaded before the console (a Desktop restart), a forked bundled game, and three that are refused.
   const { execFileSync } = await import('node:child_process');
-  const repo = new URL('..', import.meta.url).pathname;
   await rm(repo + 'src/cartridges/arrow-test-fork', { recursive: true, force: true });
   execFileSync('node', ['scripts/cartridge.mjs', 'fork', 'arrow', 'arrow-test-fork'], { cwd: repo });
   execFileSync('node', ['scripts/cartridge.mjs', 'build', 'arrow-test-fork'], { cwd: repo });
-  const fork = repo + 'dist/cartridges/arrow-test-fork/';
-  const disk = { ...tapFiles,
-    'arrow-test-fork/cartridge.json': await readFile(fork + 'cartridge.json', 'utf8'), 'arrow-test-fork/cartridge.js': await readFile(fork + 'cartridge.js', 'utf8'),
-    'arrow/cartridge.json': tapFiles['hello-cartridge/cartridge.json'], 'arrow/cartridge.js': tapFiles['hello-cartridge/cartridge.js'],
-    'broken/cartridge.json': '{ "contract": 2, "title": "Broken" }', 'broken/cartridge.js': 'export default function create() { throw new Error("no cartridge inside"); }',
-    'old/cartridge.json': '{ "contract": 1, "title": "Old" }', 'old/cartridge.js': '',
-    'imports/cartridge.json': '{ "contract": 2, "title": "Imports" }', 'imports/cartridge.js': 'import pad from "left-pad"; export default () => ({});' };
   await rm(repo + 'src/cartridges/arrow-test-fork', { recursive: true, force: true });
-  page = await seeded(disk);
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 4);
-  assert.deepEqual(await page.evaluate(() => [window.arrow.$carts.get().map(c => c.id), window.arrow.$active.get()]), [['arrow', 'arrow-test-fork', 'broken', 'hello-cartridge'], 'arrow'], 'the folder is read at load; Arrow stays in play');
+  page = await seeded({}, `?games=${TAP},/games/arrow-test-fork/plugin.js`);
+  await page.evaluate(() => {
+    const slot = globalThis.__hermesCartridges, tap = slot.list.find(c => c.id === 'hello-cartridge');
+    slot.list = slot.list.concat(
+      { ...tap, id: 'arrow' },
+      { contract: 3, id: 'broken', title: 'Broken', create() { throw new Error('no cartridge inside'); } },
+      { contract: 1, id: 'old', title: 'Old', create() {} },
+      { contract: 3, id: 'remote-cover', title: 'Remote', cover: 'https://example.com/cover.png', create: tap.create });
+    slot.listeners.forEach(fn => fn());
+  });
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 5);
+  assert.deepEqual(await page.evaluate(() => [window.arrow.$carts.get().map(c => c.id), window.arrow.$active.get()]), [['arrow', 'hello-cartridge', 'arrow-test-fork', 'broken', 'remote-cover'], 'arrow'], 'games loaded first are found; Arrow stays in play');
   const mine = await target(page, true);
   await page.mouse.click(mine.x, mine.y);
   const midBoard = await snap(page);
   await page.click('[aria-label="Settings"]');
-  assert.deepEqual(await page.locator('select[aria-label="Game"] option').allInnerTexts(), ['Arrow', 'Arrow (arrow-test-fork)', 'Broken', 'Tap'], 'the first layer lists only games that are on');
+  assert.deepEqual(await page.locator('select[aria-label="Game"] option').allInnerTexts(), ['Arrow', 'Tap', 'Arrow (arrow-test-fork)', 'Broken', 'Remote'], 'the first layer lists only games that are on');
   await page.click('text=Library');
   await page.waitForSelector('[data-library] [data-cartridge="hello-cartridge"] img');
-  assert.deepEqual(await libraryRows(page), ['arrow:bundled', 'arrow-test-fork:custom', 'broken:custom', 'hello-cartridge:custom', 'arrow:custom', 'imports:custom', 'old:custom']);
-  const row = dir => page.locator(`[data-library] [data-cartridge="${dir}"][data-kind="custom"]`);
+  assert.deepEqual(await libraryRows(page), ['arrow:bundled', 'hello-cartridge:custom', 'arrow-test-fork:custom', 'broken:custom', 'remote-cover:custom', 'arrow:custom', 'old:custom']);
+  const row = id => page.locator(`[data-library] [data-cartridge="${id}"][data-kind="custom"]`);
   assert.match(await row('hello-cartridge').innerText(), /^Tap\s+Custom\s+hello-cartridge · 1\.0\.0\s+Tap the lit square/, 'title, kind, folder and description');
   assert.match(await page.locator('[data-cartridge="arrow"][data-kind="bundled"]').innerText(), /^Arrow\s+Bundled\s+Playing\s+arrow · /);
   assert.equal(await page.locator('[data-cartridge="arrow"][data-kind="bundled"] img').count(), 1, 'the bundled game has its cover');
-  assert.match(await row('arrow').innerText(), /Not loaded: "arrow" is a bundled game\. A fork needs a folder name of its own/);
+  assert.equal(await row('arrow-test-fork').locator('img').count(), 1, 'the fork carries its cover inside its plugin');
+  assert.equal(await row('remote-cover').locator('img').count(), 0, 'a cover that is a web address is never fetched');
+  assert.match(await row('arrow').innerText(), /Not loaded: "arrow" is a bundled game\. A fork needs an id of its own/);
   assert.match(await row('old').innerText(), /Not loaded: built for contract 1/);
-  assert.match(await row('imports').innerText(), /Not loaded: the script (imports something other than react|failed to load)/);
-  assert.equal(await row('old').locator('[role="switch"]').count(), 0, 'a folder that is not a game has no switch');
+  assert.equal(await row('old').locator('[role="switch"]').count(), 0, 'something that is not a game has no switch');
   await shot(page, '18-library');
   // Switching a game off is written to catalog.json, and takes it off the first layer.
-  await page.click('[aria-label="Broken on"]');
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 3);
-  assert.deepEqual(JSON.parse(await page.evaluate(() => window.files.read('catalog.json'))), { disabled: ['broken'] });
+  await page.click('[aria-label="Remote on"]');
+  await page.waitForFunction(() => window.files.read('catalog.json'));
+  assert.deepEqual(JSON.parse(await page.evaluate(() => window.files.read('catalog.json'))), { disabled: ['remote-cover'] });
   // An agent editing catalog.json has the same effect, without a click.
-  await page.evaluate(() => window.files.put('catalog.json', '{"disabled":["broken","arrow-test-fork"]}'));
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 2, null, { timeout: 8000 });
+  await page.evaluate(() => window.files.put('catalog.json', '{"disabled":["remote-cover","arrow-test-fork"]}'));
+  await page.waitForFunction(() => window.arrow.$off.get()['arrow-test-fork'], null, { timeout: 9000 });
   assert.equal(await page.locator('[aria-label="Arrow (arrow-test-fork) on"]').isChecked(), false);
   await page.click('[aria-label="Arrow (arrow-test-fork) on"]');
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 3);
+  await page.waitForFunction(() => !window.arrow.$off.get()['arrow-test-fork']);
   await page.click('[data-library] >> text=Done');
 
   // Play the custom game: its own bar, scoring, stats and sounds.
@@ -543,7 +548,7 @@ try {
   await page.waitForSelector('[data-game="hello-cartridge"] [data-grid]');
   assert.equal(await page.locator('[aria-label="Difficulty handicap"]').count(), 0, 'Arrow\'s settings leave with it');
   await page.click('[aria-label="Settings"]');
-  assert.match(await page.locator('[data-bar]').innerText(), /L1[\s\S]*8 to go[\s\S]*0 missed/, 'the bar is the cartridge\'s own parts');
+  assert.match(await page.locator('[data-bar]').innerText(), /L1[\s\S]*8 to go[\s\S]*0 missed/, 'the bar is the game\'s own parts');
   assert.deepEqual(await page.locator('[data-bar] [data-speed]').evaluateAll(list => list.map(el => el.dataset.speed)), ['you', 'agent'], 'built from the same kit');
   await shot(page, '19-tap-cartridge');
   await page.locator('[data-grid] button:not([data-lit])').first().dispatchEvent('pointerdown');
@@ -554,10 +559,6 @@ try {
   assert.deepEqual([kept[0].boards, kept[1], kept[2]], [1, 0, 'hello-cartridge'], 'its stats are stored apart from Arrow\'s, and the choice of game is remembered');
   assert.ok((await played(page)).includes('win'), 'its sounds play through the console');
   await shot(page, '20-tap-cleared');
-  // Saving a new script reloads the game.
-  await page.evaluate(() => window.files.put('hello-cartridge/cartridge.js', window.files.read('hello-cartridge/cartridge.js').replace("label: 'to go'", "label: 'remaining'")));
-  await page.evaluate(() => window.arrow.rescan());
-  await page.waitForSelector('[data-bar] >> text=remaining');
   // A turn starting reaches the game in play, and the invitation is that game's.
   await page.evaluate(() => { window.location.hash = '/'; });
   await page.waitForSelector('text=Fake chat');
@@ -575,9 +576,6 @@ try {
   assert.match(await page.locator('[data-bar]').innerText(), /L\d · \w+[\s\S]*left/, 'the fork draws Arrow\'s bar');
   // A game that throws on start is contained.
   await page.click('[aria-label="Settings"]');
-  await page.evaluate(() => window.files.put('catalog.json', '{"disabled":[]}'));
-  await page.evaluate(() => window.arrow.rescan());
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 4);
   await page.selectOption('select[aria-label="Game"]', 'broken');
   await page.waitForSelector('text=Broken did not start');
   // Switching the game in play off falls back to the first game that is on: Arrow, mid-board as it was left.
@@ -587,10 +585,10 @@ try {
   assert.deepEqual(await page.evaluate(() => [window.arrow.$active.get(), window.arrow.game.snapshot().cleared]), ['arrow', midBoard.cleared], 'back on Arrow, mid-board');
   for (const name of ['Tap', 'Arrow (arrow-test-fork)', 'Arrow']) await page.click(`[aria-label="${name} on"]`);
   assert.equal(await page.evaluate(() => window.arrow.$carts.get().filter(c => !window.arrow.$off.get()[c.id]).length), 1, 'the last game cannot be switched off');
-  // Removing a folder removes the game.
-  await page.evaluate(() => { window.files.remove('hello-cartridge'); return window.arrow.rescan(); });
-  await page.waitForFunction(() => !window.arrow.$rows.get().some(r => r.dir === 'hello-cartridge'));
-  errors.splice(0, errors.length, ...errors.filter(e => !/no cartridge inside|left-pad|library\.imports/.test(e)));
+  // A game plugin the Desktop unloads leaves the Library.
+  await page.evaluate(() => { const slot = globalThis.__hermesCartridges; slot.list = slot.list.filter(c => c.id !== 'hello-cartridge'); slot.listeners.forEach(fn => fn()); });
+  await page.waitForFunction(() => !window.arrow.$rows.get().some(r => r.id === 'hello-cartridge'));
+  errors.splice(0, errors.length, ...errors.filter(e => !/no cartridge inside|was not loaded/.test(e)));
   await page.close();
 
   assert.deepEqual(errors, [], 'no page errors');

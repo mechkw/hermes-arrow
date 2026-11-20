@@ -2,6 +2,8 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
+import * as HarnessReact from 'react';
+import * as HarnessJsx from 'react/jsx-runtime';
 import { host, events, emit, useValue, atom, $sessionStates, $usage } from '@hermes/plugin-sdk';
 
 const contributions = [], disposers = [], memory = new Map();
@@ -18,6 +20,19 @@ const ctx = {
 };
 globalThis.__hermesArrowDebug = app => { window.arrow = app; };
 window.store = memory;
+// Game plugins are loaded the way the Desktop loads them: each is a module with a default export
+// whose register(ctx) runs once. `?games=a.js,b.js` loads them before the console, as a Desktop
+// restart might; `window.games.load(url)` loads one later and returns the function that unloads it.
+globalThis.__harnessReact = HarnessReact; globalThis.__harnessJsx = HarnessJsx;
+window.games = {
+  async load(url) {
+    const off = [], mod = await import(url);
+    mod.default.register({ onDispose: fn => off.push(fn) });
+    return () => off.splice(0).forEach(fn => fn());
+  }
+};
+const early = (new URLSearchParams(window.location.search).get('games') || '').split(',').filter(Boolean);
+for (const url of early) await window.games.load(url);
 // A stand-in for the Desktop's file door: the plugin's data folder, kept in memory. `?nofiles` plays an
 // older Desktop without it. Tests seed it before load through `window.__disk` ({ path: text }).
 const disk = new Map(Object.entries(window.__disk || {}).map(([path, text]) => [path, { text, mtimeMs: 1 }]));

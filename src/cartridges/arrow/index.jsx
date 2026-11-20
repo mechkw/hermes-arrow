@@ -1,7 +1,7 @@
 // Arrow, the cartridge: a tap-the-arrows-out puzzle. The board you are dealt grows with the task:
 // a quick question gets a handful of arrows, a long multi-tool job gets a board that takes minutes.
 //
-// Everything here reaches the app through `api` (skill/hermes-arrow-games/references/cartridge-guide.md).
+// Everything here reaches the app through `api` (skills/hermes-arrow-games/references/cartridge-guide.md).
 // It imports nothing from the Desktop SDK, so it is also the reference for how a cartridge is put
 // together, and `npm run cartridge -- fork arrow <name>` turns a copy of it into a custom game.
 
@@ -235,5 +235,5 @@ function create(api) {
   };
 }
 
-// The manifest is the same file a fork ships in its folder; the bundled build adds the plugin's version.
+// cartridge.json is what the Library shows; a fork edits its own copy. The build adds the version.
 export default { version: __VERSION__, ...manifest, create };

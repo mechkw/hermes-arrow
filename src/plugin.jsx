@@ -1,6 +1,6 @@
 // Hermes Arrow: games for the time your agent spends working.
 // This file only plugs the console into the Desktop. The console is src/console; the games are
-// cartridges, either bundled (src/cartridges) or folders in the cartridges folder (skill/hermes-arrow-games).
+// cartridges, either bundled (src/cartridges) or Desktop plugins of their own (skills/hermes-arrow-games).
 
 import { COMPOSER_AREAS, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS } from '@hermes/plugin-sdk';
 import { createConsole, ID, ROUTE } from './console/console.jsx';

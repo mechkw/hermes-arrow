@@ -223,58 +223,72 @@ test('pace reads dots as tokens per second', () => {
   assert.deepEqual([8.44, 9.96, 62.3].map(rate), ['8.4', '10', '62']);
 });
 
-import { CONTRACT, readCatalog, readManifest, rewrite, scan, writeCatalog } from '../src/console/library.js';
+import { admit, CONTRACT, insert, readCatalog, slot, watch, writeCatalog } from '../src/console/catalog.js';
 
-// The Desktop's file door, over a plain { path: text } object.
-const door = disk => ({
-  async list(_, at) {
-    const base = at ? at + '/' : '', seen = new Map();
-    for (const path of Object.keys(disk)) if (path.startsWith(base)) { const [name, ...rest] = path.slice(base.length).split('/'); seen.set(name, rest.length > 0); }
-    return { ok: true, entries: [...seen].map(([name, isDirectory]) => ({ name, path: base + name, isDirectory })) };
-  },
-  async stat(_, path) { return path in disk ? { ok: true, exists: true, isDirectory: false, mtimeMs: 5 } : { ok: true, exists: false }; },
-  async readText(_, path) { return path in disk ? { ok: true, text: disk[path], mtimeMs: 7 } : { ok: false, error: 'not-found' }; }
+test('the slot takes games in and out, whichever plugin loads first', () => {
+  delete globalThis.__hermesCartridges;
+  const cart = { contract: CONTRACT, id: 'tap', title: 'Tap', create() {} };
+  // A game that loads before the console creates the slot itself, as the guide's snippet does.
+  (globalThis.__hermesCartridges ||= {}).list = [cart];
+  let calls = 0;
+  const stop = watch(() => calls++);
+  assert.deepEqual(slot().list, [cart], 'the console finds a game that was there first');
+  const newer = { ...cart, version: '2' }, remove = insert(newer);
+  assert.deepEqual([slot().list, calls], [[newer], 1], 'the same id replaces, and the console is told');
+  remove();
+  assert.deepEqual([slot().list, calls], [[], 2]);
+  stop();
+  insert(cart)();
+  assert.equal(calls, 2, 'a stopped watcher hears nothing');
 });
 
-test('a cartridge manifest is checked before anything is loaded', () => {
-  const good = { contract: CONTRACT, title: ' Tap ', description: 'x'.repeat(400), version: 1.2, glyph: '◼◼◼', cover: 'cover.png' };
-  const { manifest } = readManifest(JSON.stringify(good));
-  assert.deepEqual([manifest.title, manifest.description.length, manifest.version, manifest.glyph, manifest.main, manifest.cover], ['Tap', 240, '1.2', '◼◼', 'cartridge.js', 'cover.png']);
-  const why = change => readManifest(JSON.stringify({ ...good, ...change })).error;
-  assert.match(readManifest('{ nope').error, /not valid JSON/);
+test('what a game hands over is checked before it is listed', () => {
+  const png = 'data:image/png;base64,AAAA';
+  const good = { contract: CONTRACT, id: 'tap', title: ' Tap ', description: 'x'.repeat(400), version: 1.2, glyph: '◼◼◼', cover: png, create() {} };
+  const { cart } = admit(good, new Set(['arrow']));
+  assert.deepEqual([cart.id, cart.title, cart.description.length, cart.version, cart.glyph, cart.cover], ['tap', 'Tap', 240, '1.2', '◼◼', png]);
+  const why = change => admit({ ...good, ...change }, new Set(['arrow'])).error;
   assert.match(why({ contract: 1 }), /contract 1/);
+  assert.match(why({ id: 'Bad Id' }), /lowercase/);
+  assert.match(why({ id: 'arrow' }), /bundled game/, 'a bundled game cannot be replaced, only forked');
   assert.match(why({ title: '' }), /title/);
-  assert.match(why({ main: '../other/cartridge.js' }), /main/);
-  assert.match(why({ main: 'game.txt' }), /main/);
-  assert.match(why({ cover: '/etc/passwd' }), /cover/);
+  assert.match(why({ create: null }), /create/);
+  assert.match(admit(null).error, /not an object/);
+  // A cover is an inline image or nothing: never an address the console would have to fetch.
+  for (const cover of ['https://example.com/a.png', 'file:///etc/passwd', 'cover.png', 'data:text/html,<b>', 7]) assert.equal(admit({ ...good, cover }).cart.cover, '');
 });
 
-test('the cartridges folder is read into games and reasons', async () => {
-  const ok = JSON.stringify({ contract: CONTRACT, title: 'Tap' });
-  const found = await scan(door({
-    'tap/cartridge.json': ok, 'tap/cartridge.js': 'export default () => ({})',
-    'no-script/cartridge.json': ok,
-    'empty/notes.txt': '',
-    'Bad Name/cartridge.json': ok, 'Bad Name/cartridge.js': '',
-    'arrow/cartridge.json': ok, 'arrow/cartridge.js': '',
-    'README.txt': 'not a folder', 'catalog.json': '{"disabled":["tap","tap",3]}'
-  }), new Set(['arrow']));
-  const by = Object.fromEntries(found.entries.map(e => [e.dir, e]));
-  assert.deepEqual(Object.keys(by).sort(), ['Bad Name', 'arrow', 'empty', 'no-script', 'tap'], 'every folder is listed, files are not');
-  assert.deepEqual([by.tap.title, by.tap.main, by.tap.mtimeMs, by.tap.error], ['Tap', 'cartridge.js', 7, undefined]);
-  assert.match(by['no-script'].error, /cartridge\.js is missing/);
-  assert.match(by.empty.error, /no cartridge\.json/);
-  assert.match(by['Bad Name'].error, /lowercase/);
-  assert.match(by.arrow.error, /bundled game/, 'a bundled game cannot be replaced, only forked');
-  assert.deepEqual([found.available, found.disabled], [true, ['tap']]);
-  assert.equal((await scan(null)).available, false, 'no file door, no custom games');
+test('the catalog file is read forgivingly and written tidily', () => {
+  assert.deepEqual(readCatalog('{"disabled":["tap","tap",3]}').disabled, ['tap']);
+  assert.deepEqual(readCatalog('{}').disabled, []);
   assert.deepEqual(readCatalog('oops').disabled, [], 'a broken catalog switches nothing off');
   assert.match(readCatalog('oops').error, /not valid JSON/);
   assert.equal(writeCatalog(['tap', 'abc']), '{\n  "disabled": [\n    "abc",\n    "tap"\n  ]\n}\n');
 });
 
-test('a cartridge script reaches React and nothing else', () => {
-  const urls = { react: 'blob:r', 'react/jsx-runtime': 'blob:j' };
-  const out = rewrite(`import { useState } from 'react';\nimport {jsx} from "react/jsx-runtime";\nimport x from 'left-pad';\nconst s = "reactor";`, urls);
-  assert.equal(out, `import { useState } from 'blob:r';\nimport {jsx} from "blob:j";\nimport x from 'left-pad';\nconst s = "reactor";`);
+import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+// The catalog's own rule for Desktop plugins (rule 8), run over everything we ship that the Desktop
+// loads. `hermes plugins validate .` is the real gate; this keeps the rule in front of every test run.
+test('shipped Desktop code stays inside the plugin SDK surface', () => {
+  const root = new URL('..', import.meta.url).pathname;
+  const strip = source => source.replace(/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (all, str) => str || '');
+  const FORBIDDEN = {
+    'dynamic code evaluation': /(?<![\w$.])eval\(|\bnew\s+Function\(/,
+    'dynamic import outside the SDK': /\bimport\(\s*(?!['"](?:@hermes\/plugin-sdk|react)(?:\/[\w/-]*)?['"]\s*\))/,
+    'remote import outside the SDK': /\bimport\s+(?:[^;'"]*?\bfrom\s*)?['"][a-zA-Z][\w+.-]*:/,
+    'script injection': /createElement\(\s*['"]script['"]\s*\)|<script\b/,
+    'app DOM reach': /\bdocument\.(?:querySelector(?:All)?|getElementsBy\w+|getElementById)\(\s*[`'"][^`'"]*\[data-(?:slot|tour|sidebar|testid)\b|\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b/,
+    'preview guest reach': /\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'"]webview\b/,
+    'raw bridge window.hermesDesktop': /\b(?:window|globalThis|self)\s*(?:\?\.|\.)\s*hermesDesktop\b/
+  };
+  const tpl = root + 'skills/hermes-arrow-games/templates/';
+  const files = ['desktop/plugin.js', ...readdirSync(tpl).map(dir => `skills/hermes-arrow-games/templates/${dir}/plugin.js`)];
+  for (const file of files) {
+    const source = strip(readFileSync(root + file, 'utf8'));
+    for (const [rule, re] of Object.entries(FORBIDDEN)) assert.equal(re.test(source), false, `${file}: ${rule}`);
+    const imports = [...source.matchAll(/(?:\bfrom\s*|\bimport\s+)(['"])([^'"\n]+)\1/g)].map(m => m[2]);
+    assert.deepEqual([...new Set(imports)].filter(spec => !['@hermes/plugin-sdk', 'react', 'react/jsx-runtime'].includes(spec)), [], `${file}: only the SDK and React may be imported`);
+  }
 });

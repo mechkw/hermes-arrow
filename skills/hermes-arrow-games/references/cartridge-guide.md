@@ -2,72 +2,76 @@
 
 Hermes Arrow is a console: it watches your agent, offers a game while it works, and frames the page, the over-the-chat modal, sound, settings and the Library. The games themselves are **cartridges**. A cartridge owns its rules, board, scoring, clock, pace and saved stats. It builds its bar and cards from the console's kit, so every game looks like part of the same machine.
 
-This guide is the reference for writing one. The worked example is [`templates/hello-cartridge`](../templates/hello-cartridge/cartridge.js), about 110 lines with no build step. The full-size reference is Arrow itself, [`src/cartridges/arrow`](../../../src/cartridges/arrow/index.jsx). [`SKILL.md`](../SKILL.md) covers installing, forking and managing the catalog.
+This guide is the reference for writing one. The worked example is [`templates/hello-cartridge`](../templates/hello-cartridge/plugin.js), about 140 lines with no build step. The full-size reference is Arrow itself, [`src/cartridges/arrow`](../../../src/cartridges/arrow/index.jsx). [`SKILL.md`](../SKILL.md) covers installing, forking, managing the catalog and publishing.
 
-## A cartridge is a folder
+## A cartridge is a Desktop plugin
 
 ```
-<cartridges folder>/
-  catalog.json
-  my-game/
-    cartridge.json
-    cartridge.js
-    cover.png
+<HERMES_HOME>/desktop-plugins/
+  hermes-arrow/plugin.js        the console
+  my-game/plugin.js             your game
 ```
 
-The cartridges folder is the plugin's data folder on the machine running Hermes Desktop: `plugin-files/data/hermes-arrow/` inside the app's data directory (`%APPDATA%\Hermes` on Windows, `~/Library/Application Support/Hermes` on macOS, `~/.config/Hermes` on Linux). The console reads it when it loads, when the game is opened, and every few seconds while the Library is open. A folder with a valid manifest and script becomes a game; anything else is listed in the Library with the reason it was not loaded. Saving the script reloads the game.
+Each game is an ordinary Hermes Desktop plugin in its own folder beside the console. The Desktop loads it, hot-reloads it on every save, lists it under Capabilities → Plugins, and can install it from the plugin catalog. The console never loads code itself: the plugin SDK and the catalog's rules allow a plugin to import only the SDK and React, so a game's code has to arrive through the Desktop's own loader.
 
-The **folder name is the game's id**. It is lowercase letters, digits and dashes, it names the game's saved stats, and it cannot be the id of a bundled game: to change a bundled game, fork it under a new name and switch the original off.
+At load, the game's `register` does one thing: it hands a cartridge object to the console through the slot, a plain object on `globalThis` that both plugins create if it is missing.
 
-### cartridge.json
+```js
+export default {
+  id: cartridge.id,
+  name: `${cartridge.title} (Hermes Arrow game)`,
+  description: cartridge.description,
+  register(ctx) {
+    const slot = (globalThis.__hermesCartridges ||= {});
+    const tell = () => (slot.listeners || []).forEach(fn => { try { fn(); } catch {} });
+    slot.list = (slot.list || []).filter(c => c.id !== cartridge.id).concat(cartridge);
+    tell();
+    ctx.onDispose(() => { slot.list = (slot.list || []).filter(c => c !== cartridge); tell(); });
+  }
+};
+```
 
-```json
-{
-  "contract": 2,
-  "title": "My Game",
-  "description": "One or two lines for the Library.",
-  "version": "1.0.0",
-  "glyph": "◆",
-  "cover": "cover.png",
-  "main": "cartridge.js"
-}
+Copy those lines as they are. The console and the games may load in either order and either may be reloaded at any time; this snippet is correct in every case, and it removes the game again when the Desktop disables or reloads the plugin.
+
+### The cartridge object
+
+```js
+const cartridge = {
+  contract: 3,
+  id: 'my-game',
+  title: 'My Game',
+  description: 'One or two lines for the Library.',
+  version: '1.0.0',
+  glyph: '◆',
+  cover: 'data:image/png;base64,…',
+  create
+};
 ```
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `contract` | yes | The version of this guide the game was built against. Currently `2`. |
+| `contract` | yes | The version of this guide the game was built against. Currently `3`. |
+| `id` | yes | The plugin's folder name and plugin `id`: lowercase letters, digits and dashes. It names the game's saved stats, so it never changes, and it cannot be the id of a bundled game. |
 | `title` | yes | The name shown in the Library, the game picker and "Play My Game". Up to 40 characters. |
 | `description` | no | Shown in the Library, clamped to two lines. Up to 240 characters. |
-| `version` | no | Shown beside the folder name. |
+| `version` | no | Shown beside the id. |
 | `glyph` | no | One character used on the status-bar invitation, and as the thumbnail when there is no cover. |
-| `cover` | no | An image file in the folder (png, jpg, webp, gif, svg), shown at 72×54. Use 4:3, around 288×216. |
-| `main` | no | The script, a `.js` file in the folder. Defaults to `cartridge.js`. |
+| `cover` | no | A 4:3 image (about 288×216) as a `data:image/…` URL, shown at 72×54. It must be inline: a web address or file path is ignored and never fetched. |
+| `create` | yes | `create(api)`, described below. |
 
-### cartridge.js
+`create(api)` is called once, the first time the game is needed, and the game it returns lives until the plugin is removed, switched off or reloaded. Keep the board and its state in that closure, not in a component: the player closes the modal to read the chat and expects the board to be as they left it.
 
-An ES module whose default export is `create(api)`:
+The file is loaded as written, so it must be plain JavaScript: use `createElement`, or write JSX and bundle it with `react` and `react/jsx-runtime` left external (`npm run cartridge -- build <name>` in the repository does exactly that for a game in `src/cartridges/`).
 
-```js
-import { createElement as h, Fragment } from 'react';
+### The catalog
 
-function create(api) {
-  // game state lives here
-  return { Stage, Bar /* , Actions, Note, Settings, onKey, taskStarted, invite, dispose */ };
-}
-export default create;
-```
-
-It may import `react` and `react/jsx-runtime` and nothing else; the console supplies both. The file is loaded as written, so it must be plain JavaScript: use `createElement`, or write JSX and bundle it with those two left external (`npm run cartridge -- build <name>` in the repository does exactly that for a game in `src/cartridges/`).
-
-`create(api)` is called once, the first time the game is needed, and the game it returns lives until the folder is removed, switched off, or its script is saved again. Keep the board and its state in that closure, not in a component: the player closes the modal to read the chat and expects the board to be as they left it.
-
-### catalog.json
+The Library (⚙ → Library) lists every game with its cover, title, id, description, a Bundled or Custom chip and a switch. The switches are kept in `catalog.json` in the console's data folder:
 
 ```json
 { "disabled": ["my-game"] }
 ```
 
-The Library's switches write this file, and editing it by hand or by agent has the same effect. A game that is switched off is not loaded at all and does not appear in the game picker. At least one game always stays on.
+Editing that file by hand or by agent has the same effect as the switch. A game that is switched off stays out of the game picker and is never started. At least one game always stays on. To change a bundled game, fork it under a new id and switch the original off.
 
 ## What `create` returns
 
@@ -162,20 +166,26 @@ A cue returns which clip to play and how (`rate` is playback speed, `dur` second
 
 ## Rules
 
-1. **Stay inside `api`.** Do not reach for the Desktop's SDK, its globals or its stores, and do not register anything with the host. The console already watches the agent, safely; a second listener on the host's send path can block the player's messages.
-2. **Import only `react`** (and `react/jsx-runtime`). Everything else arrives through `api`.
-3. **Plain JavaScript in the shipped file.** No JSX unless you bundle it.
-4. **Do your setup in `create`.** A failure there is contained and shown as "did not start". Code at the top level of the script runs when the Library loads the game, so keep it to constants and functions.
-5. **One folder name, kept forever.** It names your saved stats.
-6. **Leave a board in progress alone** when a new task starts. Replace only a board nobody has touched.
-7. **Do not modify the console or a bundled game.** Fork the game under a new name and switch the original off; send console changes upstream.
+The first four are the Desktop plugin SDK's and the plugin catalog's, and apply to a game exactly as they do to any Desktop plugin. `hermes plugins validate <folder>` checks them.
+
+1. **Import only `react` and `react/jsx-runtime`** (`@hermes/plugin-sdk` is allowed, but a game should not need it). Any other import fails at load.
+2. **Load no further code.** No `eval` or `new Function`, no `import()` of anything else (blob and http URLs included), no script tags, no fetching scripts, no updating itself.
+3. **Stay out of the app.** No querying the app's own markup, no `document.body` observers, no patching prototypes, no raw `window.hermesDesktop` calls.
+4. **Clean up.** Timers and listeners a component sets up are removed in its effect's cleanup; anything else is stopped in `dispose()`. Never hardcode colours: use the theme's `var(--ui-*)`.
+5. **Stay inside `api`.** Do not subscribe to host stores or register composer middleware. The console already watches the agent, safely; a second listener on the host's send path can block the player's messages.
+6. **`register` does nothing but the slot snippet.** Do your setup in `create`, where a failure is contained and shown as "did not start".
+7. **One id, kept forever.** It names your saved stats.
+8. **Leave a board in progress alone** when a new task starts. Replace only a board nobody has touched.
+9. **Do not modify the console or a bundled game.** Fork the game under a new id and switch the original off; send console changes upstream.
 
 ## Trying it
 
-In the repository, `npm run dev` builds the browser harness in `dev/`. It has an in-memory cartridges folder: `window.files.put('my-game/cartridge.json', text)` and `window.files.put('my-game/cartridge.js', text)` in the page console drop a game in, and the buttons at the bottom fake an agent turn. `npm run test:browser` runs the whole thing headless, including a fork of Arrow, a game that fails to start, one built for an old contract and one with a bad import.
+In the repository, `npm run dev` builds the browser harness in `dev/`. It loads game plugins the way the Desktop does: `await window.games.load('/games/my-game/plugin.js')` in the page console, with the file served beside the harness; the buttons at the bottom fake an agent turn. `npm run test:browser` runs the whole thing headless, including a fork of Arrow, a game that fails to start, and games the console refuses. `npm test` includes the catalog's Desktop rules run over every shipped file.
 
-In the Desktop, copy your folder into the cartridges folder and open ⚙ → Library.
+In the Desktop, copy your folder into `desktop-plugins/` and open ⚙ → Library.
 
 ## Contract versions
 
-This guide describes contract **2**. A game whose manifest states another number is listed in the Library as not loaded, with a message saying so. Additions that do not break existing games keep the number; anything that would break one raises it. (Contract 1 was a short-lived form in which each game was a Desktop plugin of its own.)
+This guide describes contract **3**. A game that states another number is listed in the Library as not loaded, with a message saying so. Additions that do not break existing games keep the number; anything that would break one raises it.
+
+The slot relies on Desktop plugins sharing a window. If a future Desktop isolates plugins from each other, the slot moves to whatever channel it provides; the cartridge object and `api` would not change.
