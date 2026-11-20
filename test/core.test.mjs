@@ -254,6 +254,9 @@ test('what a game hands over is checked before it is listed', () => {
   assert.match(why({ title: '' }), /title/);
   assert.match(why({ create: null }), /create/);
   assert.match(admit(null).error, /not an object/);
+  assert.equal(cart.opaque, false, 'a game is see-through unless it says otherwise');
+  assert.equal(admit({ ...good, opaque: true }).cart.opaque, true);
+  assert.equal(admit({ ...good, opaque: 'yes' }).cart.opaque, false, 'only a plain true opts out');
   // A cover is an inline image or nothing: never an address the console would have to fetch.
   for (const cover of ['https://example.com/a.png', 'file:///etc/passwd', 'cover.png', 'data:text/html,<b>', 7]) assert.equal(admit({ ...good, cover }).cart.cover, '');
 });

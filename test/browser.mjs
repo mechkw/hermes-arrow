@@ -293,6 +293,7 @@ try {
   await page.click('[aria-label="Settings"]');
   assert.equal(await vol(), 70, 'volume starts at 70%, in the settings menu');
   assert.equal(await page.locator('[aria-label="Transparency"]').count(), 0, 'transparency is a modal-only setting');
+  assert.equal(await page.evaluate(() => document.querySelector('[data-game]').style.getPropertyValue('--game-solid')), '100%', 'on the full page every surface is solid');
   await page.focus('[tabindex]');
   await page.keyboard.press(']'); await page.keyboard.press(']');
   assert.equal(await vol(), 90, '] turns it up');
@@ -369,6 +370,9 @@ try {
   assert.match(await bg(), /100%/, 'the modal starts solid');
   await page.fill('[aria-label="Transparency"]', '60');
   assert.match(await bg(), /40%/, 'transparency thins the modal background');
+  const solid = name => page.evaluate(n => document.querySelector('[data-hermes-arrow-modal] [data-game]').style.getPropertyValue(n), name);
+  assert.equal(await solid('--game-solid'), '40%', 'games are told how solid to draw their own surfaces');
+  assert.equal(await solid('--game-solid-soft'), '70%', 'and a softer step for pieces that must always read');
   assert.equal(await page.locator('[aria-label="Volume"]').count(), 1, 'volume is in the same menu');
   assert.match(await page.evaluate(() => document.querySelector('[data-bar]').style.background), /50%/, 'the top bar is a half-opaque layer over the board: midway between the board and solid');
   assert.equal(await page.locator('[aria-label="Mute sound"]').count(), 1, 'mute stays in the header');
@@ -521,7 +525,7 @@ try {
   await page.waitForSelector('[data-library] [data-cartridge="hello-cartridge"] img');
   assert.deepEqual(await libraryRows(page), ['arrow:bundled', 'hello-cartridge:custom', 'arrow-test-fork:custom', 'broken:custom', 'remote-cover:custom', 'arrow:custom', 'old:custom']);
   const row = id => page.locator(`[data-library] [data-cartridge="${id}"][data-kind="custom"]`);
-  assert.match(await row('hello-cartridge').innerText(), /^Tap\s+Custom\s+hello-cartridge · 1\.0\.0\s+Tap the lit square/, 'title, kind, folder and description');
+  assert.match(await row('hello-cartridge').innerText(), /^Tap\s+Custom\s+hello-cartridge · 1\.0\.1\s+Tap the lit square/, 'title, kind, folder and description');
   assert.match(await page.locator('[data-cartridge="arrow"][data-kind="bundled"]').innerText(), /^Arrow\s+Bundled\s+Playing\s+arrow · /);
   assert.equal(await page.locator('[data-cartridge="arrow"][data-kind="bundled"] img').count(), 1, 'the bundled game has its cover');
   assert.equal(await row('arrow-test-fork').locator('img').count(), 1, 'the fork carries its cover inside its plugin');

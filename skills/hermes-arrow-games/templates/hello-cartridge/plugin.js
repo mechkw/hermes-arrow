@@ -76,6 +76,9 @@ function create(api) {
   }
 
   // The play area. It fills the stage; cards from the kit sit over it.
+  // Unlit squares thin with the player's Transparency setting, so the chat shows through the board.
+  // Solid on the full page, and on a console that does not set the variable.
+  const SEE_THROUGH = 'color-mix(in srgb, var(--ui-bg-quaternary) var(--game-solid-soft, 100%), transparent)';
   function Stage() {
     const s = useValue($s);
     if (s.status === 'idle') deal(api.task().busy ? levelFor(api.task()) : level);
@@ -85,7 +88,7 @@ function create(api) {
         h('div', { style: { width: 'min(90%, 62vh)', aspectRatio: '1', display: 'grid', gridTemplateColumns: `repeat(${size}, 1fr)`, gap: 6 }, 'data-grid': size },
           Array.from({ length: size * size }, (_, i) => h('button', {
             key: i, type: 'button', 'aria-label': i === s.lit ? 'Lit square' : 'Square', 'data-lit': i === s.lit ? '' : undefined, onPointerDown: () => tap(i),
-            style: { border: 0, borderRadius: 4, cursor: 'pointer', background: i === s.lit ? 'var(--ui-accent)' : 'var(--ui-bg-quaternary)' }
+            style: { border: 0, borderRadius: 4, cursor: 'pointer', background: i === s.lit ? 'var(--ui-accent)' : SEE_THROUGH }
           })))),
       s.status === 'won' && h(kit.Card, { label: 'Board cleared' },
         h(kit.Eyebrow, null, 'Cleared'),
@@ -112,7 +115,7 @@ const cartridge = {
   id: 'hello-cartridge',
   title: 'Tap',
   description: 'Tap the lit square before you tap anything else. A small example game to copy and build on.',
-  version: '1.0.0',
+  version: '1.0.1',
   glyph: '◼',
   // A 4:3 image inlined as a data URL (about 288×216). Leave it out and the glyph is shown instead.
   cover: 'data:image/png;base64,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',

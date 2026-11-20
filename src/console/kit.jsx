@@ -157,8 +157,16 @@ export const Range = ({ label, style, ...rest }) => <input type="range" aria-lab
 /** The small print under a setting. */
 export const SettingNote = ({ children }) => <div style={{ ...S.faint, marginTop: -6 }}>{children}</div>;
 
+/**
+ * A background for a game's own surfaces that thins with the player's Transparency setting, so the
+ * chat stays readable behind the game. `soft` thins half as far, for pieces that must always read.
+ * Solid on the full page.
+ */
+export const surface = (color = 'var(--ui-bg-quaternary)', soft = false) =>
+  `color-mix(in srgb, ${color} var(${soft ? '--game-solid-soft' : '--game-solid'}, 100%), transparent)`;
+
 export const kit = {
-  S, fmt, clock, rate, live, agentRate, useTick, Button, Tip,
+  S, fmt, clock, rate, live, agentRate, useTick, Button, Tip, surface,
   Stepper, Tag, Count, Pips, Clock, Rate, Pace, Streak, Action,
   Card, Eyebrow, Headline, Line, Rates, Row,
   Setting, Range, SettingNote

@@ -8,6 +8,8 @@ import { Component, useEffect, useRef, useState } from 'react';
 import {
   atom, Button, Dialog, DialogContent, DialogTitle, haptic, host, Popover, PopoverContent, PopoverTrigger, Switch, Tip, useValue
 } from '@hermes/plugin-sdk';
+// Read as a namespace so a Desktop without the themed select still loads this plugin.
+import * as sdk from '@hermes/plugin-sdk';
 import ding from '../../assets/sfx/ding.mp3';
 import tick from '../../assets/sfx/tick.mp3';
 import { createAudio } from './audio.js';
@@ -60,7 +62,7 @@ export function createConsole(ctx, builtin) {
   // ---- games --------------------------------------------------------------------------------
 
   const files = ctx.files?.readText && ctx.files?.writeText ? ctx.files : null;
-  const bundled = builtin.map(b => ({ id: b.dir, bundled: true, title: b.module.title, description: b.module.description || '', version: b.module.version || '', glyph: b.module.glyph || '', cover: b.cover || '', create: b.module.create }));
+  const bundled = builtin.map(b => ({ id: b.dir, bundled: true, title: b.module.title, description: b.module.description || '', version: b.module.version || '', glyph: b.module.glyph || '', opaque: b.module.opaque === true, cover: b.cover || '', create: b.module.create }));
   const taken = new Set(bundled.map(c => c.id)), prefixes = new Map(builtin.map(b => [b.dir, b.prefix]));
   const instances = new Map(); // id -> { cart, game }
   const admitted = new Map();  // what a game handed over -> the checked cartridge, so one object is one game
@@ -81,9 +83,13 @@ export function createConsole(ctx, builtin) {
       haptic: kind => { try { haptic(kind); } catch { /* optional */ } },
       /** True while this game is the one on screen. */
       visible: () => $active.get() === cart.id && (onGame() || $modal.get()),
+      /** How see-through the player has set the game over the chat, 0 to 0.8. Always 0 on the full page. */
+      transparency: () => see(cart),
+      useTransparency: () => { const modal = useValue($modal), fade = useValue($fade); return modal && !cart.opaque ? fade : 0; },
       report: (where, error) => report(`${cart.id}.${where}`, error)
     };
   };
+  const see = cart => ($modal.get() && !cart?.opaque ? $fade.get() : 0);
   // A game that will not start still gets its place, so the player can see why and leave it.
   const broken = (cart, error) => ({
     Bar: () => null,
@@ -257,6 +263,7 @@ export function createConsole(ctx, builtin) {
   }
 
   // The first layer: which of the games that are on is in play, and the way into the Library.
+  const Themed = sdk.Select && sdk.SelectTrigger && sdk.SelectValue && sdk.SelectContent && sdk.SelectItem;
   function GameRow({ onLibrary }) {
     const carts = useValue($carts), off = useValue($off), active = useValue($active);
     const on = carts.filter(c => !off[c.id]);
@@ -264,10 +271,16 @@ export function createConsole(ctx, builtin) {
       <div style={{ ...S.setting, paddingTop: 10, borderTop: '1px solid var(--ui-stroke-tertiary)' }}>
         <span>Game</span>
         {on.length > 1
-          ? <select aria-label="Game" value={active} onChange={e => select(e.target.value)}
-              style={{ minWidth: 0, height: 26, padding: '0 6px', borderRadius: 4, font: 'inherit', color: 'inherit', background: 'var(--ui-bg-quaternary)', border: '1px solid var(--ui-stroke-secondary)' }}>
-              {on.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-            </select>
+          ? (Themed
+            ? <sdk.Select value={active} onValueChange={select}>
+                <sdk.SelectTrigger size="sm" aria-label="Game" style={{ minWidth: 0 }}><sdk.SelectValue /></sdk.SelectTrigger>
+                <sdk.SelectContent>{on.map(c => <sdk.SelectItem key={c.id} value={c.id}>{c.title}</sdk.SelectItem>)}</sdk.SelectContent>
+              </sdk.Select>
+            // The open list is drawn by the system, so each option carries the theme's colours itself.
+            : <select aria-label="Game" value={active} onChange={e => select(e.target.value)}
+                style={{ minWidth: 0, height: 26, padding: '0 6px', borderRadius: 4, font: 'inherit', color: 'var(--ui-text-primary)', background: 'var(--ui-bg-quaternary)', border: '1px solid var(--ui-stroke-secondary)' }}>
+                {on.map(c => <option key={c.id} value={c.id} style={{ color: 'var(--ui-text-primary)', background: 'var(--ui-bg-elevated)' }}>{c.title}</option>)}
+              </select>)
           : <span style={{ fontWeight: 600 }}>{on[0]?.title}</span>}
         <Button size="sm" variant="outline" onClick={onLibrary}>Library</Button>
       </div>
@@ -322,7 +335,7 @@ export function createConsole(ctx, builtin) {
   }
 
   // Volume, the game's own settings, how see-through the modal is, whether the composer offers a game, and the game in play.
-  function Settings({ modal, id, game }) {
+  function Settings({ modal, id, game, opaque }) {
     const volume = useValue($volume), fade = useValue($fade), offer = useValue($offer);
     const [open, setOpen] = useState(false);
     return (
@@ -333,7 +346,7 @@ export function createConsole(ctx, builtin) {
             <kit.Range min="0" max="100" step="5" value={Math.round(volume * 100)} label="Volume" onChange={e => setVolume(e.target.value / 100)} />
           </kit.Setting>
           {game?.Settings && <Guard key={id} id={id} part="settings"><game.Settings modal={modal} /></Guard>}
-          {modal && (
+          {modal && !opaque && (
             <kit.Setting label="Transparency" value={`${Math.round(fade * 100)}%`}>
               <kit.Range min="0" max={MAX_FADE * 100} step="5" value={Math.round(fade * 100)} label="Transparency" onChange={e => setFade(e.target.value / 100)} />
             </kit.Setting>
@@ -353,7 +366,10 @@ export function createConsole(ctx, builtin) {
     const id = useValue($active), carts = useValue($carts), task = useValue(tracker.$task), soundOn = useValue($sound), volume = useValue($volume), fade = useValue($fade), library = useValue($library);
     const game = use(id);
     // In the see-through modal the bar sits halfway between the board's opacity and solid, so it always reads.
-    const barStyle = modal && fade > 0 ? { ...S.bar, background: 'color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) 50%, transparent)' } : S.bar;
+    const opaque = !!find(id)?.opaque, through = modal && !opaque ? fade : 0;
+    // What a game's own surfaces follow (kit.surface): as solid as the setting says, and a softer step that always reads.
+    const solid = { '--game-solid': `${Math.round((1 - through) * 100)}%`, '--game-solid-soft': `${Math.round((1 - through / 2) * 100)}%` };
+    const barStyle = modal && through > 0 ? { ...S.bar, background: 'color-mix(in srgb, var(--ui-chat-bubble-background, var(--ui-bg-elevated)) 50%, transparent)' } : S.bar;
     useEffect(() => { root.current?.focus({ preventScroll: true }); }, [id]);
     // A game switched on or off in catalog.json by an agent shows up when the page is next opened.
     useEffect(() => { rescan(); }, []);
@@ -367,7 +383,7 @@ export function createConsole(ctx, builtin) {
     };
     if (!game) return <div ref={root} style={S.page} tabIndex={-1} data-hermes-arrow={VERSION} />;
     return (
-      <div ref={root} style={S.page} tabIndex={-1} onKeyDown={key} data-hermes-arrow={VERSION} data-game={id}>
+      <div ref={root} style={{ ...S.page, ...solid }} tabIndex={-1} onKeyDown={key} data-hermes-arrow={VERSION} data-game={id}>
         <DoneBanner />
         <div style={barStyle} data-bar="">
           <Guard key={`bar.${id}`} id={id} part="bar"><game.Bar modal={modal} /></Guard>
@@ -377,7 +393,7 @@ export function createConsole(ctx, builtin) {
           <span style={S.row}>
             {game.Actions && <Guard key={`actions.${id}`} id={id} part="actions"><game.Actions modal={modal} /></Guard>}
             <Tip label={soundOn ? 'Sound on (M)' : 'Sound off (M)'}><Button size="sm" variant="ghost" aria-label={soundOn ? 'Mute sound' : 'Unmute sound'} aria-pressed={soundOn} onClick={toggleSound} style={{ opacity: soundOn ? 1 : 0.5 }}>{soundOn ? '♪' : '♪̸'}</Button></Tip>
-            <Settings modal={modal} id={id} game={game} />
+            <Settings modal={modal} id={id} game={game} opaque={opaque} />
             {modal && <Button size="sm" variant="ghost" aria-label="Close game" onClick={close}>✕</Button>}
           </span>
         </div>
@@ -391,7 +407,7 @@ export function createConsole(ctx, builtin) {
 
   // The game over the chat. Lives in the status bar's tree because that is always mounted.
   function Modal() {
-    const isOpen = useValue($modal), fade = useValue($fade), name = title(find(useValue($active)));
+    const isOpen = useValue($modal), cart = find(useValue($active)), set = useValue($fade), fade = cart?.opaque ? 0 : set, name = title(cart);
     useEffect(() => { const fn = () => { if (onGame()) close(); }; window.addEventListener('hashchange', fn); return () => window.removeEventListener('hashchange', fn); }, []);
     if (!isOpen) return null;
     const solid = Math.round((1 - fade) * 100);

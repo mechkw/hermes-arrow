@@ -1,7 +1,7 @@
 ---
 name: hermes-arrow-games
 description: Add, write, fork and manage games for the Hermes Arrow plugin in Hermes Desktop. Use when the user wants a new game to play while their agent works, wants to change how a bundled game plays (fork it), or asks to enable, disable, install, update or remove games in the Hermes Arrow Library. Covers game plugins, the cartridge API, catalog.json, the plugin catalog's rules, and what an agent must leave alone.
-version: 1.1.0
+version: 1.2.0
 metadata:
   hermes:
     tags: [hermes-desktop, games, plugins, hermes-arrow, cartridges]
@@ -100,6 +100,7 @@ Read `references/cartridge-guide.md` before writing: it lists every `api` member
 - Size the board from `api.task().seconds`, the console's measure of how much work the agent's turn amounts to.
 - Keep game state in the `create` closure, not in components. The player closes the game to read the chat and expects the board as they left it.
 - Leave a board in progress alone when a new task starts.
+- Keep the chat visible behind the game. The player has a Transparency setting so they can watch their agent while they play; paint no full-stage background, and give filled areas `kit.surface(color)` so they thin with it. This is encouraged, not enforced: if a game truly needs a solid field, set `opaque: true` on the cartridge rather than ignoring the setting. Tell the user which you chose. Details in the guide under "Seeing the chat through the game".
 - Timers and listeners a component sets up are removed in its effect's cleanup; anything longer-lived is stopped in `dispose()`.
 
 ## Forking a bundled game

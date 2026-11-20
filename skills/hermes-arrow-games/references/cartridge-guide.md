@@ -57,6 +57,7 @@ const cartridge = {
 | `version` | no | Shown beside the id. |
 | `glyph` | no | One character used on the status-bar invitation, and as the thumbnail when there is no cover. |
 | `cover` | no | A 4:3 image (about 288×216) as a `data:image/…` URL, shown at 72×54. It must be inline: a web address or file path is ignored and never fetched. |
+| `opaque` | no | `true` if the game cannot be played see-through. The console then keeps it solid over the chat and hides the Transparency setting while it is in play. Leave it out unless you need it. |
 | `create` | yes | `create(api)`, described below. |
 
 `create(api)` is called once, the first time the game is needed, and the game it returns lives until the plugin is removed, switched off or reloaded. Keep the board and its state in that closure, not in a component: the player closes the modal to read the chat and expects the board to be as they left it.
@@ -102,6 +103,7 @@ Components may mount and unmount at any time (the page, the modal, a switch of g
 | `api.setTimeout(fn, ms)` | A timer that dies with the plugin. Returns its cancel function. |
 | `api.haptic(kind)` | A tap of haptic feedback where the device has it. |
 | `api.visible()` | True while your game is the one on screen. |
+| `api.transparency()`, `api.useTransparency()` | How see-through the player has set the game over the chat: 0 (solid) to 0.8, and always 0 on the full page. For canvas drawing; plain surfaces use `kit.surface`. See Seeing the chat through the game. |
 | `api.report(where, error)` | Record a failure. The player is told once; the chat is never affected. |
 | `api.contract`, `api.version` | The contract number and the console's version. |
 
@@ -135,9 +137,22 @@ Everything in the bar and on the cards comes from `api.kit`, which is how games 
 
 **Settings rows:** `Setting({ label, value })` wrapping a `Range({ label, min, max, step, value, onChange })`, and `SettingNote` for the small print under it.
 
-**Helpers:** `fmt(n)` (1,420), `clock(seconds)` (1:05), `rate(v)` (8.4, 62), `live(v)` (is this rate worth showing), `agentRate()` (the agent's tokens a second, 0 when unknown), `useTick(ms)` (re-render on a timer), and `S`, the shared styles (`S.fill`, `S.muted`, `S.faint`, `S.num`, `S.chip`, `S.row`).
+**Helpers:** `fmt(n)` (1,420), `clock(seconds)` (1:05), `rate(v)` (8.4, 62), `live(v)` (is this rate worth showing), `agentRate()` (the agent's tokens a second, 0 when unknown), `useTick(ms)` (re-render on a timer), `surface(color, soft)` (a background that thins with the Transparency setting), and `S`, the shared styles (`S.fill`, `S.muted`, `S.faint`, `S.num`, `S.chip`, `S.row`).
 
 Colours come from the Desktop theme as CSS variables: `--ui-accent`, `--ui-yellow`, `--ui-red`, `--ui-green`, `--ui-text-primary`, `--ui-text-tertiary`, `--ui-text-quaternary`, `--ui-bg-quaternary`, `--ui-bg-elevated`, `--ui-stroke-secondary`. Use them for anything you draw, and re-read them if you paint to a canvas, since the theme can change while you are open.
+
+## Seeing the chat through the game
+
+The game opens over the chat, and the player has a **Transparency** setting (⚙, in the modal) so they can watch their agent work behind the board. The console handles the frame: the modal's background thins to the setting, and the bar stays half solid so it always reads. Your stage sits on that background, so a game that paints nothing behind its pieces is already see-through and needs to do nothing.
+
+It only takes care when your game fills areas of its own. This is a convention, not a requirement, but please follow it: a game that blocks the chat defeats the reason the player has it open.
+
+- **Do not paint a full-stage background.** Let the console's show.
+- **Give filled areas `kit.surface(color)`** as their background. It is solid on the full page and thins with the setting over the chat. `kit.surface(color, true)` thins half as far, for pieces that must always be readable (tiles, a playfield's cells).
+- **Without the kit**, the same two values are CSS variables on the game's frame: `background: color-mix(in srgb, var(--ui-bg-quaternary) var(--game-solid, 100%), transparent)`, or `--game-solid-soft`. The fallback keeps it solid on a console that does not set them.
+- **On a canvas**, read `api.useTransparency()` in the component and scale the alpha of fills by `1 - value`. Keep strokes, pieces and text at full strength: the player thins the backdrop, not the game.
+- **Keep what the player acts on legible at 80%.** Lines and accent-coloured pieces survive; large pale fills do not.
+- **If the game cannot work see-through** (it depends on a solid field, or on colour judgement), set `opaque: true` on the cartridge. The console keeps it solid and hides the setting, which is more honest than a slider that does nothing.
 
 ## Scoring, clock and pace are yours
 
@@ -186,6 +201,8 @@ In the Desktop, copy your folder into `desktop-plugins/` and open ⚙ → Librar
 
 ## Contract versions
 
-This guide describes contract **3**. A game that states another number is listed in the Library as not loaded, with a message saying so. Additions that do not break existing games keep the number; anything that would break one raises it.
+This guide describes contract **3**. `kit.surface`, `api.transparency`, the `--game-solid` variables and `opaque` arrived in console 0.9.2 without a new number; the CSS-variable form with its fallback works on any console.
+
+ A game that states another number is listed in the Library as not loaded, with a message saying so. Additions that do not break existing games keep the number; anything that would break one raises it.
 
 The slot relies on Desktop plugins sharing a window. If a future Desktop isolates plugins from each other, the slot moves to whatever channel it provides; the cartridge object and `api` would not change.

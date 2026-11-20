@@ -52,7 +52,7 @@ export function admit(raw, taken = new Set()) {
   if (typeof raw.create !== 'function') return no('create(api) is missing');
   // A cover is an inline image. Anything else (a web address, a file path) is ignored, never fetched.
   const cover = typeof raw.cover === 'string' && /^data:image\/(png|jpeg|webp|gif|svg\+xml)[;,]/.test(raw.cover) && raw.cover.length < 400000 ? raw.cover : '';
-  return { cart: { id, title, description: text(raw.description, 240), version: text(String(raw.version ?? ''), 20), glyph: [...text(raw.glyph, 8)].slice(0, 2).join(''), cover, create: raw.create, source: raw } };
+  return { cart: { id, title, description: text(raw.description, 240), version: text(String(raw.version ?? ''), 20), glyph: [...text(raw.glyph, 8)].slice(0, 2).join(''), opaque: raw.opaque === true, cover, create: raw.create, source: raw } };
 }
 
 /** Parse catalog.json. A missing or broken file switches nothing off. */

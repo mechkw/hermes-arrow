@@ -1,5 +1,5 @@
 // A stand-in for @hermes/plugin-sdk, just enough to run the plugin in a plain browser tab.
-import { cloneElement, createContext, useContext, useEffect, useState } from 'react';
+import { Children, cloneElement, createContext, useContext, useEffect, useState } from 'react';
 
 // The real store libraries, at the app's versions: a listener that throws inside `set` must behave here as it does there.
 export { atom, computed } from 'nanostores';
@@ -64,5 +64,15 @@ export function PopoverTrigger({ children }) { const [open, setOpen] = useContex
 export function PopoverContent({ children, style, align, ...rest }) {
   const [open] = useContext(PopoverState);
   return open ? <div role="dialog" {...rest} style={{ position: 'absolute', top: '100%', right: 0, zIndex: 60, borderRadius: 5, background: 'var(--ui-bg-elevated)', border: '1px solid var(--ui-stroke-secondary)', ...style }}>{children}</div> : null;
+}
+// The themed select, drawn as a native one so tests can drive it.
+export const SelectTrigger = () => null, SelectValue = () => null, SelectContent = () => null, SelectItem = () => null;
+export function Select({ value, onValueChange, children }) {
+  const kids = Children.toArray(children), trigger = kids.find(k => k.type === SelectTrigger), content = kids.find(k => k.type === SelectContent);
+  return (
+    <select data-themed="" aria-label={trigger?.props['aria-label']} value={value} onChange={e => onValueChange?.(e.target.value)}>
+      {Children.map(content?.props.children, c => <option key={c.props.value} value={c.props.value}>{c.props.children}</option>)}
+    </select>
+  );
 }
 export const Switch = ({ checked, onCheckedChange, ...rest }) => <input type="checkbox" role="switch" checked={!!checked} onChange={e => onCheckedChange?.(e.target.checked)} {...rest} />;
