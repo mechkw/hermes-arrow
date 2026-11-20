@@ -1,14 +1,16 @@
 // Arrow, the cartridge: a tap-the-arrows-out puzzle. The board you are dealt grows with the task:
 // a quick question gets a handful of arrows, a long multi-tool job gets a board that takes minutes.
 //
-// Everything here reaches the app through `api` (docs/CARTRIDGES.md). It imports nothing from the
-// Desktop SDK, so it is also the reference for how a cartridge is put together.
+// Everything here reaches the app through `api` (skill/hermes-arrow-games/references/cartridge-guide.md).
+// It imports nothing from the Desktop SDK, so it is also the reference for how a cartridge is put
+// together, and `npm run cartridge -- fork arrow <name>` turns a copy of it into a custom game.
 
 import { useEffect, useRef } from 'react';
 import { Game } from './game.js';
 import { handicapFactor, livesFor, liveStreak, nextHintCost, pace, settle } from './score.js';
 import { boardSpec, dealBoard, handicap, HANDICAP_NAMES, level, levelForTask, MAX_LEVEL } from './difficulty.js';
 import voice from './voice.js';
+import manifest from './cartridge.json';
 
 // Theme colours for the canvas, re-read at most once a second so a theme switch follows through.
 function palette(el) {
@@ -233,13 +235,5 @@ function create(api) {
   };
 }
 
-export default {
-  contract: 1,
-  id: 'arrow',
-  name: 'Arrow',
-  title: 'Hermes Arrow',
-  glyph: '➤',
-  version: __VERSION__,
-  description: 'Tap the arrows out. Boards scale with how long and hard your agent is working.',
-  create
-};
+// The manifest is the same file a fork ships in its folder; the bundled build adds the plugin's version.
+export default { version: __VERSION__, ...manifest, create };

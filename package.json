@@ -1,6 +1,6 @@
 {
   "name": "hermes-arrow",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Arrow-escape puzzle for Hermes Desktop that scales with the task your agent is working on.",
@@ -9,7 +9,8 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node test/browser.mjs",
-    "dev": "node scripts/build.mjs --dev"
+    "dev": "node scripts/build.mjs --dev",
+    "cartridge": "node scripts/cartridge.mjs"
   },
   "devDependencies": {
     "@nanostores/react": "^1.1.0",

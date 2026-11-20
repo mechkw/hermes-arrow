@@ -1,7 +1,7 @@
 // Plays the built plugin in a real browser against the stub SDK. Run: npm run build -- --dev && npm run test:browser
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, rm } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { extname, join, normalize } from 'node:path';
 
@@ -20,7 +20,7 @@ const url = `http://127.0.0.1:${server.address().port}/`;
 
 const browser = await chromium.launch();
 const errors = [];
-async function open(viewport, theme, query = '') {
+async function open(viewport, theme, query = '', disk = null) {
   const context = await browser.newContext({ viewport, hasTouch: viewport.width < 500, deviceScaleFactor: viewport.width < 500 ? 3 : 1 });
   const page = await context.newPage();
   // Count synthesised notes instead of listening to them.
@@ -32,6 +32,7 @@ async function open(viewport, theme, query = '') {
     const source = AudioContext.prototype.createBufferSource;
     AudioContext.prototype.createBufferSource = function () { window.samples++; return source.call(this); };
   });
+  if (disk) await page.addInitScript(d => { window.__disk = d; }, disk);
   page.on('pageerror', e => errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
   await page.goto(url + query);
@@ -456,34 +457,90 @@ try {
   assert.equal((await snap(page)).mode, 'task', 'loading mid-task deals a task board');
   await page.close();
 
-  // --- Cartridges: a game dropped in as its own plugin ----------------------------------------
-  page = await open({ width: 1180, height: 760 });
-  await page.click('a:has-text("Arrow")');
-  await page.waitForFunction(() => window.arrow?.game.status === 'play');
+  // --- The library: games as folders in the cartridges folder ----------------------------------
+  const tpl = new URL('../skill/hermes-arrow-games/templates/hello-cartridge/', import.meta.url).pathname;
+  const tapFiles = { 'hello-cartridge/cartridge.json': await readFile(tpl + 'cartridge.json', 'utf8'), 'hello-cartridge/cartridge.js': await readFile(tpl + 'cartridge.js', 'utf8'),
+    'hello-cartridge/cover.png': 'data:image/png;base64,' + (await readFile(tpl + 'cover.png')).toString('base64') };
+  const seeded = async (disk, query = '') => {
+    const pg = await open({ width: 1180, height: 760 }, undefined, query, disk);
+    await pg.click('a:has-text("Arrow")');
+    await pg.waitForFunction(() => window.arrow?.game.status === 'play' && window.arrow.$shelf.get().scanned);
+    return pg;
+  };
+  const libraryRows = pg => pg.locator('[data-library] [data-cartridge]').evaluateAll(list => list.map(el => `${el.dataset.cartridge}:${el.dataset.kind}`));
+
+  // Only the bundled game: the first layer names it, and the Library is one click further.
+  page = await seeded({});
   await page.click('[aria-label="Settings"]');
-  assert.equal(await page.locator('[aria-label="Games"]').count(), 0, 'with one game there is no games menu');
+  assert.equal(await page.locator('select[aria-label="Game"]').count(), 0, 'one game on: nothing to choose between');
+  await page.click('text=Library');
+  await page.waitForSelector('[data-library]');
+  assert.deepEqual(await libraryRows(page), ['arrow:bundled']);
+  assert.equal(await page.locator('[aria-label="Settings"][aria-expanded="true"]').count(), 0, 'the settings panel gets out of the way');
+  assert.ok((await page.evaluate(() => window.files.read('README.txt'))).includes('cartridges folder'), 'the folder explains itself');
+  // A game dropped into the folder while the Library is open appears on its own.
+  await page.evaluate(files => { for (const [path, text] of Object.entries(files)) window.files.put(path, text); }, tapFiles);
+  await page.waitForSelector('[data-cartridge="hello-cartridge"]', { timeout: 8000 });
   await page.close();
 
-  for (const query of ['?cart', '?cart=first']) {
-    page = await open({ width: 1180, height: 760 }, undefined, query);
-    await page.click('a:has-text("Arrow")');
-    await page.waitForFunction(() => window.arrow?.game.status === 'play');
-    await page.waitForFunction(() => window.arrow.$carts.get().length === 2);
-    assert.deepEqual(await page.evaluate(() => [window.arrow.$carts.get().map(c => c.id), window.arrow.$active.get()]), [['arrow', 'tap'], 'arrow'], `${query || 'default'}: both games on hand, Arrow in play`);
-    await page.close();
-  }
+  // An older Desktop without the file door still plays the bundled game and says why there are no others.
+  page = await seeded({}, '?nofiles');
+  await page.click('[aria-label="Settings"]');
+  await page.click('text=Library');
+  await page.waitForSelector('text=cannot load custom games');
+  await page.click('[data-library] >> text=Done');
+  await page.close();
 
-  page = await open({ width: 1180, height: 760 }, undefined, '?cart');
-  await page.click('a:has-text("Arrow")');
-  await page.waitForFunction(() => window.arrow?.game.status === 'play');
+  // A folder already there at load, a forked bundled game, and three folders that are not games.
+  const { execFileSync } = await import('node:child_process');
+  const repo = new URL('..', import.meta.url).pathname;
+  await rm(repo + 'src/cartridges/arrow-test-fork', { recursive: true, force: true });
+  execFileSync('node', ['scripts/cartridge.mjs', 'fork', 'arrow', 'arrow-test-fork'], { cwd: repo });
+  execFileSync('node', ['scripts/cartridge.mjs', 'build', 'arrow-test-fork'], { cwd: repo });
+  const fork = repo + 'dist/cartridges/arrow-test-fork/';
+  const disk = { ...tapFiles,
+    'arrow-test-fork/cartridge.json': await readFile(fork + 'cartridge.json', 'utf8'), 'arrow-test-fork/cartridge.js': await readFile(fork + 'cartridge.js', 'utf8'),
+    'arrow/cartridge.json': tapFiles['hello-cartridge/cartridge.json'], 'arrow/cartridge.js': tapFiles['hello-cartridge/cartridge.js'],
+    'broken/cartridge.json': '{ "contract": 2, "title": "Broken" }', 'broken/cartridge.js': 'export default function create() { throw new Error("no cartridge inside"); }',
+    'old/cartridge.json': '{ "contract": 1, "title": "Old" }', 'old/cartridge.js': '',
+    'imports/cartridge.json': '{ "contract": 2, "title": "Imports" }', 'imports/cartridge.js': 'import pad from "left-pad"; export default () => ({});' };
+  await rm(repo + 'src/cartridges/arrow-test-fork', { recursive: true, force: true });
+  page = await seeded(disk);
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 4);
+  assert.deepEqual(await page.evaluate(() => [window.arrow.$carts.get().map(c => c.id), window.arrow.$active.get()]), [['arrow', 'arrow-test-fork', 'broken', 'hello-cartridge'], 'arrow'], 'the folder is read at load; Arrow stays in play');
   const mine = await target(page, true);
   await page.mouse.click(mine.x, mine.y);
   const midBoard = await snap(page);
   await page.click('[aria-label="Settings"]');
-  assert.deepEqual(await page.locator('[aria-label="Games"] [data-cartridge]').evaluateAll(list => list.map(el => el.dataset.cartridge)), ['arrow', 'tap'], 'the menu lists both');
-  await shot(page, '18-games-menu');
-  await page.click('[aria-label="Play Tap"]');
-  await page.waitForSelector('[data-game="tap"] [data-grid]');
+  assert.deepEqual(await page.locator('select[aria-label="Game"] option').allInnerTexts(), ['Arrow', 'Arrow (arrow-test-fork)', 'Broken', 'Tap'], 'the first layer lists only games that are on');
+  await page.click('text=Library');
+  await page.waitForSelector('[data-library] [data-cartridge="hello-cartridge"] img');
+  assert.deepEqual(await libraryRows(page), ['arrow:bundled', 'arrow-test-fork:custom', 'broken:custom', 'hello-cartridge:custom', 'arrow:custom', 'imports:custom', 'old:custom']);
+  const row = dir => page.locator(`[data-library] [data-cartridge="${dir}"][data-kind="custom"]`);
+  assert.match(await row('hello-cartridge').innerText(), /^Tap\s+Custom\s+hello-cartridge · 1\.0\.0\s+Tap the lit square/, 'title, kind, folder and description');
+  assert.match(await page.locator('[data-cartridge="arrow"][data-kind="bundled"]').innerText(), /^Arrow\s+Bundled\s+Playing\s+arrow · /);
+  assert.equal(await page.locator('[data-cartridge="arrow"][data-kind="bundled"] img').count(), 1, 'the bundled game has its cover');
+  assert.match(await row('arrow').innerText(), /Not loaded: "arrow" is a bundled game\. A fork needs a folder name of its own/);
+  assert.match(await row('old').innerText(), /Not loaded: built for contract 1/);
+  assert.match(await row('imports').innerText(), /Not loaded: the script (imports something other than react|failed to load)/);
+  assert.equal(await row('old').locator('[role="switch"]').count(), 0, 'a folder that is not a game has no switch');
+  await shot(page, '18-library');
+  // Switching a game off is written to catalog.json, and takes it off the first layer.
+  await page.click('[aria-label="Broken on"]');
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 3);
+  assert.deepEqual(JSON.parse(await page.evaluate(() => window.files.read('catalog.json'))), { disabled: ['broken'] });
+  // An agent editing catalog.json has the same effect, without a click.
+  await page.evaluate(() => window.files.put('catalog.json', '{"disabled":["broken","arrow-test-fork"]}'));
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 2, null, { timeout: 8000 });
+  assert.equal(await page.locator('[aria-label="Arrow (arrow-test-fork) on"]').isChecked(), false);
+  await page.click('[aria-label="Arrow (arrow-test-fork) on"]');
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 3);
+  await page.click('[data-library] >> text=Done');
+
+  // Play the custom game: its own bar, scoring, stats and sounds.
+  await page.click('[aria-label="Settings"]');
+  await page.selectOption('select[aria-label="Game"]', 'hello-cartridge');
+  await page.waitForSelector('[data-game="hello-cartridge"] [data-grid]');
   assert.equal(await page.locator('[aria-label="Difficulty handicap"]').count(), 0, 'Arrow\'s settings leave with it');
   await page.click('[aria-label="Settings"]');
   assert.match(await page.locator('[data-bar]').innerText(), /L1[\s\S]*8 to go[\s\S]*0 missed/, 'the bar is the cartridge\'s own parts');
@@ -493,45 +550,47 @@ try {
   for (let i = 0; i < 8; i++) await page.locator('[data-lit]').dispatchEvent('pointerdown');
   await page.waitForSelector('[role="dialog"][aria-label="Board cleared"]');
   assert.match(await page.locator('[role="dialog"][aria-label="Board cleared"]').innerText(), /8 hits · 0:0\d · 1 missed/, 'its own scoring and clock');
-  const kept = await page.evaluate(() => [window.store.get('cart.tap.stats'), window.store.get('stats')?.boards || 0, window.store.get('game')]);
-  assert.deepEqual([kept[0].boards, kept[1], kept[2]], [1, 0, 'tap'], 'its stats are stored apart from Arrow\'s, and the choice of game is remembered');
+  const kept = await page.evaluate(() => [window.store.get('cart.hello-cartridge.stats'), window.store.get('stats')?.boards || 0, window.store.get('game')]);
+  assert.deepEqual([kept[0].boards, kept[1], kept[2]], [1, 0, 'hello-cartridge'], 'its stats are stored apart from Arrow\'s, and the choice of game is remembered');
   assert.ok((await played(page)).includes('win'), 'its sounds play through the console');
   await shot(page, '20-tap-cleared');
+  // Saving a new script reloads the game.
+  await page.evaluate(() => window.files.put('hello-cartridge/cartridge.js', window.files.read('hello-cartridge/cartridge.js').replace("label: 'to go'", "label: 'remaining'")));
+  await page.evaluate(() => window.arrow.rescan());
+  await page.waitForSelector('[data-bar] >> text=remaining');
   // A turn starting reaches the game in play, and the invitation is that game's.
   await page.evaluate(() => { window.location.hash = '/'; });
   await page.waitForSelector('text=Fake chat');
-  assert.deepEqual(await page.locator('[data-pill]').allInnerTexts(), [], 'no offer while idle');
   await page.evaluate(() => window.agent.send('Audit the entire repo, refactor auth and write tests for every endpoint. Be thorough.'));
   await page.waitForSelector('[data-pill]');
   assert.deepEqual(await page.locator('[data-pill]').allInnerTexts(), ['Play Tap'], 'the composer offers the game in play');
   await page.click('[data-pill]');
   await page.waitForSelector('[data-hermes-arrow-modal] [data-grid="5"]');
   await page.evaluate(() => window.agent.finish());
-  // Switching the game in play off falls back to Arrow, whose board was left as it was.
+  // The forked Arrow is a game of its own, with stats of its own.
   await page.click('[aria-label="Settings"]');
-  await page.click('[aria-label="Tap on"]');
+  await page.selectOption('select[aria-label="Game"]', 'arrow-test-fork');
+  await page.waitForSelector('[data-game="arrow-test-fork"] canvas');
+  await page.click('[aria-label="Settings"]');
+  assert.match(await page.locator('[data-bar]').innerText(), /L\d · \w+[\s\S]*left/, 'the fork draws Arrow\'s bar');
+  // A game that throws on start is contained.
+  await page.click('[aria-label="Settings"]');
+  await page.evaluate(() => window.files.put('catalog.json', '{"disabled":[]}'));
+  await page.evaluate(() => window.arrow.rescan());
+  await page.waitForFunction(() => window.arrow.$carts.get().length === 4);
+  await page.selectOption('select[aria-label="Game"]', 'broken');
+  await page.waitForSelector('text=Broken did not start');
+  // Switching the game in play off falls back to the first game that is on: Arrow, mid-board as it was left.
+  await page.click('text=Library');
+  await page.click('[aria-label="Broken on"]');
   await page.waitForSelector('[data-game="arrow"]');
   assert.deepEqual(await page.evaluate(() => [window.arrow.$active.get(), window.arrow.game.snapshot().cleared]), ['arrow', midBoard.cleared], 'back on Arrow, mid-board');
-  await page.click('[aria-label="Arrow on"]');
-  assert.deepEqual(await page.evaluate(() => window.arrow.$off.get()), { tap: true }, 'the last game cannot be switched off');
-  await page.click('[aria-label="Tap on"]');
-  // A cartridge that throws is contained: reported, shown as failed, and the rest keeps working.
-  await page.evaluate(() => {
-    const slot = globalThis.__hermesCartridges;
-    slot.list = slot.list.concat({ contract: 1, id: 'boom', name: 'Boom', create() { throw new Error('no cartridge inside'); } }, { contract: 99, id: 'future', name: 'Future', create() {} });
-    slot.listeners.forEach(fn => fn());
-  });
-  await page.waitForSelector('[data-cartridge="boom"]');
-  assert.equal(await page.locator('[data-cartridge="future"]').count(), 0, 'a cartridge for another contract is refused');
-  await page.click('[aria-label="Play Boom"]');
-  await page.waitForSelector('text=Boom did not start');
-  await page.click('[aria-label="Play Arrow"]');
-  await page.waitForFunction(() => !!window.arrow.game.canvas);
-  // Pulling a cartridge out removes it from the menu.
-  await page.evaluate(() => { const slot = globalThis.__hermesCartridges; slot.list = slot.list.filter(c => c.id !== 'boom'); window.cartridge.remove(); });
-  await page.waitForFunction(() => window.arrow.$carts.get().length === 1);
-  assert.equal(await page.locator('[aria-label="Games"]').count(), 0);
-  errors.splice(0, errors.length, ...errors.filter(e => !/no cartridge inside|was refused/.test(e)));
+  for (const name of ['Tap', 'Arrow (arrow-test-fork)', 'Arrow']) await page.click(`[aria-label="${name} on"]`);
+  assert.equal(await page.evaluate(() => window.arrow.$carts.get().filter(c => !window.arrow.$off.get()[c.id]).length), 1, 'the last game cannot be switched off');
+  // Removing a folder removes the game.
+  await page.evaluate(() => { window.files.remove('hello-cartridge'); return window.arrow.rescan(); });
+  await page.waitForFunction(() => !window.arrow.$rows.get().some(r => r.dir === 'hello-cartridge'));
+  errors.splice(0, errors.length, ...errors.filter(e => !/no cartridge inside|left-pad|library\.imports/.test(e)));
   await page.close();
 
   assert.deepEqual(errors, [], 'no page errors');

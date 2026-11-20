@@ -56,7 +56,10 @@ export function DialogContent({ children, style, showCloseButton, blurBackdrop, 
 export const DialogTitle = ({ children, style }) => <h2 style={style}>{children}</h2>;
 
 const PopoverState = createContext(null);
-export function Popover({ children }) { const state = useState(false); return <PopoverState.Provider value={state}><span style={{ position: 'relative', display: 'inline-flex' }}>{children}</span></PopoverState.Provider>; }
+export function Popover({ children, open, onOpenChange }) {
+  const own = useState(false), state = onOpenChange ? [!!open, onOpenChange] : own;
+  return <PopoverState.Provider value={state}><span style={{ position: 'relative', display: 'inline-flex' }}>{children}</span></PopoverState.Provider>;
+}
 export function PopoverTrigger({ children }) { const [open, setOpen] = useContext(PopoverState); return cloneElement(children, { onClick: () => setOpen(!open), 'aria-expanded': open }); }
 export function PopoverContent({ children, style, align, ...rest }) {
   const [open] = useContext(PopoverState);

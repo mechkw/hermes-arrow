@@ -1,10 +1,11 @@
 // Hermes Arrow: games for the time your agent spends working.
 // This file only plugs the console into the Desktop. The console is src/console; the games are
-// cartridges, either built in (src/cartridges) or dropped in as plugins of their own (docs/CARTRIDGES.md).
+// cartridges, either bundled (src/cartridges) or folders in the cartridges folder (skill/hermes-arrow-games).
 
 import { COMPOSER_AREAS, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS } from '@hermes/plugin-sdk';
 import { createConsole, ID, ROUTE } from './console/console.jsx';
 import arrow from './cartridges/arrow/index.jsx';
+import arrowCover from './cartridges/arrow/cover.png';
 
 export default {
   id: ID,
@@ -12,7 +13,7 @@ export default {
   description: 'An arrow-escape puzzle for the wait. Boards scale with how long and hard your agent is working.',
   register(ctx) {
     // Arrow keeps the storage keys it has always had.
-    const app = createConsole(ctx, [{ cart: arrow, prefix: '' }]);
+    const app = createConsole(ctx, [{ dir: 'arrow', module: arrow, cover: arrowCover, prefix: '' }]);
     ctx.onDispose(app.dispose);
     // A registration that fails must not leave our listeners on the host's stores.
     try { this.contribute(ctx, app); } catch (error) { app.dispose(); throw error; }

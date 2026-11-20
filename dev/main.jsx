@@ -2,7 +2,6 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import plugin from 'hermes-arrow-plugin';
-import example from '../examples/hello-cartridge/plugin.js';
 import { host, events, emit, useValue, atom, $sessionStates, $usage } from '@hermes/plugin-sdk';
 
 const contributions = [], disposers = [], memory = new Map();
@@ -19,14 +18,29 @@ const ctx = {
 };
 globalThis.__hermesArrowDebug = app => { window.arrow = app; };
 window.store = memory;
-// `?cart` drops the example cartridge in after the console has loaded, `?cart=first` before it.
-const wantCart = new URLSearchParams(window.location.search).get('cart');
-const cartCtx = () => { const off = []; window.cartridge = { remove() { off.splice(0).forEach(fn => fn()); } }; return { onDispose: fn => off.push(fn) }; };
-if (wantCart === 'first') example.register(cartCtx());
+// A stand-in for the Desktop's file door: the plugin's data folder, kept in memory. `?nofiles` plays an
+// older Desktop without it. Tests seed it before load through `window.__disk` ({ path: text }).
+const disk = new Map(Object.entries(window.__disk || {}).map(([path, text]) => [path, { text, mtimeMs: 1 }]));
+let stamp = 1;
+window.files = {
+  put(path, text) { disk.set(path, { text, mtimeMs: ++stamp }); },
+  remove(prefix) { for (const path of [...disk.keys()]) if (path === prefix || path.startsWith(prefix + '/')) disk.delete(path); },
+  read: path => disk.get(path)?.text
+};
+if (!window.location.search.includes('nofiles')) ctx.files = {
+  async list(folder, at) {
+    const base = at ? at + '/' : '', seen = new Map();
+    for (const path of disk.keys()) { if (!path.startsWith(base)) continue; const [name, ...rest] = path.slice(base.length).split('/'); seen.set(name, rest.length > 0); }
+    return { ok: true, entries: [...seen].map(([name, isDirectory]) => ({ name, path: base + name, isDirectory })), truncated: false };
+  },
+  async stat(folder, path) { const f = disk.get(path); return f ? { ok: true, exists: true, isDirectory: false, size: f.text.length, mtimeMs: f.mtimeMs } : { ok: true, exists: false }; },
+  async readText(folder, path) { const f = disk.get(path); return f ? { ok: true, text: f.text, size: f.text.length, mtimeMs: f.mtimeMs } : { ok: false, error: 'not-found' }; },
+  async readDataUrl(folder, path) { const f = disk.get(path); return f ? { ok: true, url: f.text } : { ok: false, error: 'not-found' }; },
+  async writeText(folder, path, text) { disk.set(path, { text, mtimeMs: ++stamp }); return { ok: true }; }
+};
 // `?busy` loads the plugin while a turn is already running, as happens when the Desktop reloads plugins mid-task.
 if (window.location.search.includes('busy')) $sessionStates.set({ s0: { busy: true } });
 plugin.register(ctx);
-if (wantCart !== null && wantCart !== 'first') example.register(cartCtx());
 
 const find = area => contributions.filter(c => c.area === area);
 // The fake agent. `send` runs the composer middleware exactly as the app would before a turn starts.

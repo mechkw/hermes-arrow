@@ -6,7 +6,7 @@ const root = new URL('..', import.meta.url).pathname;
 const { version } = JSON.parse(readFileSync(root + 'package.json', 'utf8'));
 const common = { bundle: true, format: 'esm', jsx: 'automatic', target: 'es2022', logLevel: 'warning', legalComments: 'none',
   // Sound clips ride inside the bundle as base64: the Desktop loader resolves code only.
-  loader: { '.mp3': 'base64' },
+  loader: { '.mp3': 'base64', '.png': 'dataurl' },
   // The one place the version is written is package.json.
   define: { __VERSION__: JSON.stringify(version) } };
 

@@ -1,9 +1,9 @@
 // Tap: the smallest useful cartridge. One square is lit; tap it before you tap anything else.
 //
-// Copy this folder to <HERMES_HOME>/desktop-plugins/hello-cartridge/ and the game appears under ⚙ in
-// Hermes Arrow within a few seconds. It is plain JavaScript with no build step, and it imports
-// nothing but React: everything else comes from the `api` the console hands to create().
-// docs/CARTRIDGES.md explains every line.
+// Copy this folder into the cartridges folder under a name of your own and the game appears in the
+// Library (⚙, then Library). It is plain JavaScript with no build step, and it imports nothing but
+// React: everything else comes from the `api` the console hands to create().
+// ../../references/cartridge-guide.md explains every line.
 
 import { createElement as h, Fragment } from 'react';
 
@@ -105,18 +105,5 @@ function create(api) {
   };
 }
 
-const cartridge = { contract: 1, id: 'tap', name: 'Tap', glyph: '◼', version: '1.0.0', description: 'Tap the lit square. An example cartridge.', create };
-
-// A cartridge is an ordinary Desktop plugin whose only job is to put itself in the slot.
-export default {
-  id: 'hello-cartridge',
-  name: 'Tap (example cartridge)',
-  description: 'An example game cartridge for Hermes Arrow.',
-  register(ctx) {
-    const slot = (globalThis.__hermesCartridges ||= {});
-    const tell = () => (slot.listeners || []).forEach(fn => { try { fn(); } catch { /* the console's problem */ } });
-    slot.list = (slot.list || []).filter(c => c.id !== cartridge.id).concat(cartridge);
-    tell();
-    ctx.onDispose(() => { slot.list = (slot.list || []).filter(c => c !== cartridge); tell(); });
-  }
-};
+// The console calls this once, the first time the game is needed.
+export default create;

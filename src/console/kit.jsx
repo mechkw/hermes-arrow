@@ -1,6 +1,6 @@
 // The kit: the parts every game builds its bar, cards and settings from, so all games look like one
 // console. A cartridge receives this as `api.kit` and never styles these things itself.
-// docs/CARTRIDGES.md lists every part with its props.
+// skill/hermes-arrow-games/references/cartridge-guide.md lists every part with its props.
 
 import { useEffect, useState } from 'react';
 import { Button, host, Tip } from '@hermes/plugin-sdk';

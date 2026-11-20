@@ -223,27 +223,58 @@ test('pace reads dots as tokens per second', () => {
   assert.deepEqual([8.44, 9.96, 62.3].map(rate), ['8.4', '10', '62']);
 });
 
-import { insert, refusal, slot, watch } from '../src/console/slot.js';
+import { CONTRACT, readCatalog, readManifest, rewrite, scan, writeCatalog } from '../src/console/library.js';
 
-test('the cartridge slot takes games in and out, in any order', () => {
-  delete globalThis.__hermesCartridges;
-  const cart = { contract: 1, id: 'tap', name: 'Tap', create() {} };
-  // A cartridge that loads before the console creates the slot itself, as the guide's snippet does.
-  const early = (globalThis.__hermesCartridges ||= {});
-  early.list = [cart];
-  let calls = 0;
-  const stop = watch(() => calls++);
-  assert.deepEqual(slot().list, [cart], 'the console finds a cartridge that was there first');
-  const newer = { ...cart, version: '2' }, remove = insert(newer);
-  assert.deepEqual([slot().list, calls], [[newer], 1], 'the same id replaces, and the console is told');
-  remove();
-  assert.deepEqual([slot().list, calls], [[], 2]);
-  stop();
-  insert(cart)();
-  assert.equal(calls, 2, 'a stopped watcher hears nothing');
-  assert.equal(refusal(cart), '');
-  assert.match(refusal({ ...cart, contract: 2 }), /contract 2/);
-  assert.match(refusal({ ...cart, id: 'Bad Id' }), /id must be/);
-  assert.match(refusal({ ...cart, create: null }), /create/);
-  assert.match(refusal(null), /not an object/);
+// The Desktop's file door, over a plain { path: text } object.
+const door = disk => ({
+  async list(_, at) {
+    const base = at ? at + '/' : '', seen = new Map();
+    for (const path of Object.keys(disk)) if (path.startsWith(base)) { const [name, ...rest] = path.slice(base.length).split('/'); seen.set(name, rest.length > 0); }
+    return { ok: true, entries: [...seen].map(([name, isDirectory]) => ({ name, path: base + name, isDirectory })) };
+  },
+  async stat(_, path) { return path in disk ? { ok: true, exists: true, isDirectory: false, mtimeMs: 5 } : { ok: true, exists: false }; },
+  async readText(_, path) { return path in disk ? { ok: true, text: disk[path], mtimeMs: 7 } : { ok: false, error: 'not-found' }; }
+});
+
+test('a cartridge manifest is checked before anything is loaded', () => {
+  const good = { contract: CONTRACT, title: ' Tap ', description: 'x'.repeat(400), version: 1.2, glyph: '◼◼◼', cover: 'cover.png' };
+  const { manifest } = readManifest(JSON.stringify(good));
+  assert.deepEqual([manifest.title, manifest.description.length, manifest.version, manifest.glyph, manifest.main, manifest.cover], ['Tap', 240, '1.2', '◼◼', 'cartridge.js', 'cover.png']);
+  const why = change => readManifest(JSON.stringify({ ...good, ...change })).error;
+  assert.match(readManifest('{ nope').error, /not valid JSON/);
+  assert.match(why({ contract: 1 }), /contract 1/);
+  assert.match(why({ title: '' }), /title/);
+  assert.match(why({ main: '../other/cartridge.js' }), /main/);
+  assert.match(why({ main: 'game.txt' }), /main/);
+  assert.match(why({ cover: '/etc/passwd' }), /cover/);
+});
+
+test('the cartridges folder is read into games and reasons', async () => {
+  const ok = JSON.stringify({ contract: CONTRACT, title: 'Tap' });
+  const found = await scan(door({
+    'tap/cartridge.json': ok, 'tap/cartridge.js': 'export default () => ({})',
+    'no-script/cartridge.json': ok,
+    'empty/notes.txt': '',
+    'Bad Name/cartridge.json': ok, 'Bad Name/cartridge.js': '',
+    'arrow/cartridge.json': ok, 'arrow/cartridge.js': '',
+    'README.txt': 'not a folder', 'catalog.json': '{"disabled":["tap","tap",3]}'
+  }), new Set(['arrow']));
+  const by = Object.fromEntries(found.entries.map(e => [e.dir, e]));
+  assert.deepEqual(Object.keys(by).sort(), ['Bad Name', 'arrow', 'empty', 'no-script', 'tap'], 'every folder is listed, files are not');
+  assert.deepEqual([by.tap.title, by.tap.main, by.tap.mtimeMs, by.tap.error], ['Tap', 'cartridge.js', 7, undefined]);
+  assert.match(by['no-script'].error, /cartridge\.js is missing/);
+  assert.match(by.empty.error, /no cartridge\.json/);
+  assert.match(by['Bad Name'].error, /lowercase/);
+  assert.match(by.arrow.error, /bundled game/, 'a bundled game cannot be replaced, only forked');
+  assert.deepEqual([found.available, found.disabled], [true, ['tap']]);
+  assert.equal((await scan(null)).available, false, 'no file door, no custom games');
+  assert.deepEqual(readCatalog('oops').disabled, [], 'a broken catalog switches nothing off');
+  assert.match(readCatalog('oops').error, /not valid JSON/);
+  assert.equal(writeCatalog(['tap', 'abc']), '{\n  "disabled": [\n    "abc",\n    "tap"\n  ]\n}\n');
+});
+
+test('a cartridge script reaches React and nothing else', () => {
+  const urls = { react: 'blob:r', 'react/jsx-runtime': 'blob:j' };
+  const out = rewrite(`import { useState } from 'react';\nimport {jsx} from "react/jsx-runtime";\nimport x from 'left-pad';\nconst s = "reactor";`, urls);
+  assert.equal(out, `import { useState } from 'blob:r';\nimport {jsx} from "blob:j";\nimport x from 'left-pad';\nconst s = "reactor";`);
 });

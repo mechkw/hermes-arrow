@@ -1,0 +1,8 @@
+{
+  "contract": 2,
+  "title": "Arrow",
+  "description": "Tap the arrows out, one clear path at a time. Boards grow with how long and hard your agent is working.",
+  "glyph": "➤",
+  "cover": "cover.png",
+  "main": "cartridge.js"
+}

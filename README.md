@@ -45,9 +45,13 @@ The top bar shows your speed in your agent's unit. Every grid dot you uncover co
 
 ## Games are cartridges
 
-The plugin is a console with games plugged into it. Arrow is built in. Any other game is a cartridge: a small Desktop plugin of its own, dropped into `desktop-plugins/`, that shows up under ⚙ → Games where each game can be switched on or off and chosen to play. A cartridge owns its rules, scoring, clock, pace and stats, and builds its bar from the console's parts so every game looks the same.
+The plugin is a console with games plugged into it. Arrow is bundled. Any other game is a cartridge: a folder with a `cartridge.json`, a script and a cover image, dropped into the cartridges folder (the plugin's data folder, outside the plugin itself). The console finds it on its own.
 
-[docs/CARTRIDGES.md](docs/CARTRIDGES.md) is the guide for writing one, and [`examples/hello-cartridge`](examples/hello-cartridge/plugin.js) is a complete game in about 120 lines.
+⚙ → **Library** lists every game with its cover, title, folder, description, a Bundled or Custom chip and an on/off switch, and says why a folder could not be loaded. Games that are switched off stay out of the way; the settings panel only offers the ones that are on.
+
+A cartridge owns its rules, scoring, clock, pace and stats, and builds its bar from the console's parts so every game looks the same. To change a bundled game, fork it (`npm run cartridge -- fork arrow my-arrow`, then `build`) and switch the original off rather than editing it.
+
+[`skill/hermes-arrow-games`](skill/hermes-arrow-games/SKILL.md) is an agent skill for all of this: writing a game, forking one, and managing the catalog, with the rules for what an agent should leave alone. Copy that folder into your agent's skills directory (for Hermes, `~/.hermes/skills/gaming/`). It contains the [cartridge guide](skill/hermes-arrow-games/references/cartridge-guide.md) and a [complete example game](skill/hermes-arrow-games/templates/hello-cartridge/cartridge.js).
 
 ## Boards
 
@@ -76,7 +80,7 @@ npm run test:browser     # plays the built plugin in Chromium, screenshots in te
 
 The source is in two halves:
 
-- `src/console/` is everything a game does not own: `tracker.js` watches agent turns, `effort.js` turns a turn into seconds of work, `audio.js` is the sound engine, `kit.jsx` is the bar, card and settings parts, `slot.js` is where dropped-in games arrive, and `console.jsx` frames the page, modal, settings and games menu.
+- `src/console/` is everything a game does not own: `tracker.js` watches agent turns, `effort.js` turns a turn into seconds of work, `audio.js` is the sound engine, `kit.jsx` is the bar, card and settings parts, `library.js` reads the cartridges folder, and `console.jsx` frames the page, modal, settings and Library.
 - `src/cartridges/arrow/` is the game: `core.js` builds boards in reverse leaving order, so every board is solvable by construction; `difficulty.js` maps work to a level; `game.js` is rules, canvas and input; `score.js` is points and pace; `voice.js` is its sounds; `index.jsx` puts them together as a cartridge.
 
 `src/plugin.jsx` plugs the console into the Desktop, and `plugin.js` is the built file the app loads.

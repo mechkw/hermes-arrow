@@ -1,0 +1,9 @@
+{
+  "contract": 2,
+  "title": "Tap",
+  "description": "Tap the lit square before you tap anything else. A small example game to copy and build on.",
+  "version": "1.0.0",
+  "glyph": "◼",
+  "cover": "cover.png",
+  "main": "cartridge.js"
+}
